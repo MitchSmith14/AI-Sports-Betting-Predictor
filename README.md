@@ -19,7 +19,6 @@ One Time Setup.
 
 * Install the requirements
     * `pip install -r requirements`
-    // pip install streamlit pandas numpy nflreadpy requests
 
 
 Execute the Tool
