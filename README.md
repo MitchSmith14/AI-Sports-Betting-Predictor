@@ -1,11 +1,47 @@
-cd C:\Users\mdsmi\OneDrive\Desktop\Code Projects\Python\Sports Betting Predictor
+AI-SPORTS-BETTING-PREDICTOR
+===========================
 
-python -m venv venv
+This tool uses advanced models and simulations to predict sports betting outcomes
 
-venv\Scripts\activate
 
-pip install streamlit pandas numpy nflreadpy requests
+One Time Setup.
+===============
+* Install Python 3.9 or greater
 
-streamlit run app.py
+* Create a virtual environment
+    * `python -m venv venv`
+
+* Activate the environment
+    * Windows
+      `venv\Scripts\activate.bat`
+    * FreeBSD/linux
+      `. venv/bin/activate`
+
+* Install the requirements
+    * `pip install -r requirements`
+    // pip install streamlit pandas numpy nflreadpy requests
+
+
+Execute the Tool
+================
+* pull any updates from the main repository
+    * git pull
+
+* Activate the environment
+    * Windows
+      `venv\Scripts\activate.bat`
+    * FreeBSD/linux
+      `. venv/bin/activate`
+
+* Run the tool
+`streamlit run app.py`
+
+
+Sync changes
+============
+* git add .
+* git commit -m "Message"
+* git push origin main
+
 
 THE ODDS API KEY: dfe5503d44a8bfee3391f69313bb643a
