@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from sports.nfl.data_ingestion import (
     load_nfl_data, load_schedule_data, load_teams_data, load_injury_data, load_roster_data,
     get_upcoming_matchup, get_team_injury_report, get_team_colors, get_team_logo_url, get_player_headshot_url
@@ -10,6 +11,11 @@ from sports.nfl.config import NFL_STADIUM_COORDS, TEAM_ABBR_TO_NAME
 from sports.nfl.engine import (
     calculate_defense_summary, calculate_offense_summary,
     calculate_matchup_baselines, run_simulation
+)
+from sports.nfl.backtest_engine import run_historical_backtest
+from sports.nfl.calibration import (
+    calculate_brier_score, calculate_log_loss, 
+    compute_reliability_curve, simulate_flat_betting_roi
 )
 from shared.api_services import fetch_weather, fetch_live_game_odds, fetch_player_props
 from shared.ui_components import render_team_card, render_prop_row
@@ -46,17 +52,93 @@ def render_last_10_games(player_name, weekly_data, schedules_data):
     st.dataframe(formatted_df, use_container_width=True, hide_index=True)
 
 
-def render_nfl():
-    weekly_df = load_nfl_data()
-    schedules_df = load_schedule_data()
-    teams_metadata = load_teams_data()
-    injuries_df = load_injury_data()
-    rosters_df = load_roster_data()
+def render_backtester(weekly_df, schedules_df):
+    st.header("📈 Historical Backtesting & Calibration")
+    st.markdown("Run walk-forward Monte Carlo simulations on historical slates to compute true Brier Scores, Log-Loss, and simulated betting ROI.")
+    
+    with st.expander("⚙️ Backtest Configuration", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            target_season = st.selectbox("Season", [2024, 2025], index=1)
+        with c2:
+            weeks = st.slider("Week Range", 1, 18, (1, 4))
+        with c3:
+            num_sims = st.selectbox("Simulations per Matchup", [1000, 2500, 5000, 10000], index=1)
+            
+        if st.button("🚀 Run Walk-Forward Backtest", type="primary"):
+            df_results = run_historical_backtest(weekly_df, schedules_df, target_season, weeks[0], weeks[1], num_sims)
+            st.session_state['bt_results'] = df_results
+            
+    if 'bt_results' in st.session_state and not st.session_state['bt_results'].empty:
+        df_results = st.session_state['bt_results']
+        
+        st.divider()
+        st.subheader("📊 Calibration Diagnostics")
+        
+        prop_col1, prop_col2 = st.columns([2, 1])
+        with prop_col1:
+            prop_filter = st.selectbox("Select Prop Market to Analyze", [
+                "Passing Yards > 200", "Passing Yards > 250",
+                "Rushing Yards > 40", "Receiving Yards > 40"
+            ])
+        with prop_col2:
+            min_edge = st.slider("Minimum Value Edge (for ROI)", 0.01, 0.15, 0.05, 0.01, help="Only bet when the model's win probability exceeds the implied market odds by this margin.")
+        
+        # Map selection to actual dataframe columns
+        if prop_filter == "Passing Yards > 200":
+            p_col, a_col, s_type = "prob_over_200", "actual_over_200", "pass_yards"
+        elif prop_filter == "Passing Yards > 250":
+            p_col, a_col, s_type = "prob_over_250", "actual_over_250", "pass_yards"
+        elif prop_filter == "Rushing Yards > 40":
+            p_col, a_col, s_type = "prob_over_40", "actual_over_40", "rush_yards"
+        else:
+            p_col, a_col, s_type = "prob_over_40", "actual_over_40", "rec_yards"
+            
+        filtered_df = df_results[df_results["stat_type"] == s_type].dropna(subset=[p_col, a_col])
+        
+        if filtered_df.empty:
+            st.warning("No valid data for this prop market in the selected range.")
+            return
+            
+        brier = calculate_brier_score(filtered_df, p_col, a_col)
+        logloss = calculate_log_loss(filtered_df, p_col, a_col)
+        roi_data = simulate_flat_betting_roi(filtered_df, p_col, a_col, min_edge=min_edge)
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Brier Score", f"{brier:.4f}", help="Lower is better. 0.0 is perfect, 0.25 is random.")
+        m2.metric("Log-Loss", f"{logloss:.4f}", help="Lower is better. Penalizes overconfidence.")
+        m3.metric("Simulated ROI", f"{roi_data['roi_pct']}%", f"{roi_data['net_units']} Units")
+        m4.metric("Total Bets Triggered", roi_data['total_bets'])
+        
+        st.divider()
+        col_chart, col_data = st.columns([3, 2])
+        
+        with col_chart:
+            st.markdown("**Reliability Curve (Calibration)**")
+            rel_df = compute_reliability_curve(filtered_df, p_col, a_col, n_bins=10)
+            if not rel_df.empty:
+                # Plot Actual Hit Rate vs Perfect Calibration (Ideal)
+                plot_df = pd.DataFrame({
+                    "Predicted Probability": rel_df["mean_predicted"],
+                    "Actual Hit Rate": rel_df["actual_win_rate"],
+                    "Ideal (Perfect Calibration)": rel_df["mean_predicted"]
+                }).set_index("Predicted Probability")
+                
+                st.line_chart(plot_df)
+                st.caption("A perfectly calibrated model will follow a straight 45-degree line.")
+        
+        with col_data:
+            st.markdown("**Bin Summary**")
+            st.dataframe(rel_df[["bin_range", "mean_predicted", "actual_win_rate", "sample_size"]].style.format({
+                "mean_predicted": "{:.1%}",
+                "actual_win_rate": "{:.1%}"
+            }), hide_index=True)
+            
+        st.subheader("Raw Simulation Logs")
+        st.dataframe(filtered_df[["season", "week", "player", "team", "sim_mean", "actual", p_col, a_col]])
 
-    if weekly_df.empty:
-        st.warning("No NFL data available. Please verify nflreadpy is installed and configured.")
-        return
 
+def render_matchup_simulator(weekly_df, schedules_df, teams_metadata, injuries_df, rosters_df):
     # Failsafe Initialization
     if 'inactive_selections' not in st.session_state:
         st.session_state['inactive_selections'] = []
@@ -87,9 +169,6 @@ def render_nfl():
     selected_opponent = st.sidebar.selectbox("Opposing Defense:", team_list, index=team_list.index(default_opp) if default_opp in team_list else 0)
     def_team_logo = get_team_logo_url(selected_opponent, teams_metadata)
 
-    # -------------------------------------------------------------
-    # AUTOMATED INJURY DETECTION FOR BOTH TEAMS
-    # -------------------------------------------------------------
     raw_off_injuries = get_team_injury_report(player_team_abbr, injuries_df, weekly_df, current_matchup_week)
     def_injuries = get_team_injury_report(selected_opponent, injuries_df, weekly_df, current_matchup_week)
 
@@ -206,9 +285,7 @@ def render_nfl():
     c4.metric("Weather", "🏟️ Dome (Indoors)" if current_weather['condition'] == "Dome" else f"💨 {current_weather['wind_mph']} mph | 🌧️ {current_weather['precip_mm']} mm", help=current_weather['condition'])
     st.divider()
 
-    # -------------------------------------------------------------
-    # MERGE MANUAL INACTIVES INTO OFFENSIVE INJURY REPORT
-    # -------------------------------------------------------------
+    # Merge manual inactives into offensive injury report
     displayed_off_injuries = []
     seen_off_players = set()
 
@@ -224,7 +301,6 @@ def render_nfl():
         if name not in seen_off_players:
             p_stats = weekly_df[(weekly_df["recent_team"] == player_team_abbr) & (weekly_df["player_name"] == name)]
             pos = p_stats["position"].iloc[-1] if not p_stats.empty and "position" in p_stats.columns else "SKILL"
-
             displayed_off_injuries.append({
                 "player_name": name,
                 "position": pos,
@@ -232,12 +308,9 @@ def render_nfl():
                 "is_out": True
             })
 
-    # -------------------------------------------------------------
-    # MATCHUP INJURY & STATUS REPORT BANNER
-    # -------------------------------------------------------------
+    # Injury Banner
     with st.expander("🚑 Matchup Injury & Status Report", expanded=(len(displayed_off_injuries) > 0 or len(def_injuries) > 0)):
         inj_col1, inj_col2 = st.columns(2)
-        
         with inj_col1:
             st.markdown(f"**{player_team_abbr} Full Injury Report:**")
             if displayed_off_injuries:
@@ -352,7 +425,7 @@ def render_nfl():
                 "rush_tds", "Rushing TDs",
                 c3.number_input("Rushing TDs Line", value=st.session_state['rush_tds_input'], step=0.5, key="rtr"),
                 c4.number_input("Rushing TD Odds", value=st.session_state['rush_td_odds_input'], step=5, key="rtor"),
-                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"], "Opp Scheme": coverage_scheme, "Vacated Rush Share": f"{matchup['vacated_rush_share']:.1%}"}
+                context_metrics={"Starting QB": matchup["projected_qb"], "Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"], "Opp Scheme": coverage_scheme, "Vacated Rush Share": f"{matchup['vacated_rush_share']:.1%}"}
             )
         with tab2:
             st.markdown("##### Configuration")
@@ -364,14 +437,7 @@ def render_nfl():
                 "rec_tds", "Receiving TDs",
                 c3.number_input("Receiving TDs Line", value=st.session_state['rec_tds_input'], step=0.5, key="rectr"),
                 c4.number_input("Receiving TD Odds", value=st.session_state['rec_td_odds_input'], step=5, key="rector"),
-                context_metrics={
-                    "Team Pass Att": df_sims["team_pass"].mean(),
-                    "Player Targets": df_sims["targets"].mean(),
-                    "Avg Target Depth (aDOT)": matchup["player_adot"],
-                    "Player EPA/Target": matchup["player_epa"],
-                    "Opp Scheme": coverage_scheme,
-                    "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"
-                }
+                context_metrics={"Starting QB": matchup["projected_qb"], "Team Pass Att": df_sims["team_pass"].mean(), "Player Targets": df_sims["targets"].mean(), "Avg Target Depth (aDOT)": matchup["player_adot"], "Player EPA/Target": matchup["player_epa"], "Opp Scheme": coverage_scheme, "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"}
             )
     else:
         tab1, = st.tabs(["🤲 Receiving"])
@@ -385,16 +451,28 @@ def render_nfl():
                 "rec_tds", "Receiving TDs",
                 c3.number_input("Receiving TDs Line", value=st.session_state['rec_tds_input'], step=0.5, key="rectw"),
                 c4.number_input("Receiving TD Odds", value=st.session_state['rec_td_odds_input'], step=5, key="rectow"),
-                context_metrics={
-                    "Team Pass Att": df_sims["team_pass"].mean(),
-                    "Player Targets": df_sims["targets"].mean(),
-                    "Avg Target Depth (aDOT)": matchup["player_adot"],
-                    "Player EPA/Target": matchup["player_epa"],
-                    "Opp Scheme": coverage_scheme,
-                    "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"
-                }
+                context_metrics={"Starting QB": matchup["projected_qb"], "Team Pass Att": df_sims["team_pass"].mean(), "Player Targets": df_sims["targets"].mean(), "Avg Target Depth (aDOT)": matchup["player_adot"], "Player EPA/Target": matchup["player_epa"], "Opp Scheme": coverage_scheme, "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"}
             )
 
     st.divider()
     st.subheader(f"📊 {selected_player} - Recent Performance")
     render_last_10_games(selected_player, weekly_df, schedules_df)
+
+def render_nfl():
+    weekly_df = load_nfl_data()
+    schedules_df = load_schedule_data()
+    teams_metadata = load_teams_data()
+    injuries_df = load_injury_data()
+    rosters_df = load_roster_data()
+
+    if weekly_df.empty:
+        st.warning("No NFL data available. Please verify nflreadpy is installed and configured.")
+        return
+
+    st.sidebar.title("🏈 NFL AI Engine")
+    app_mode = st.sidebar.radio("Engine Mode", ["🔮 Matchup Simulator", "📈 Historical Backtesting"])
+
+    if app_mode == "🔮 Matchup Simulator":
+        render_matchup_simulator(weekly_df, schedules_df, teams_metadata, injuries_df, rosters_df)
+    else:
+        render_backtester(weekly_df, schedules_df)
