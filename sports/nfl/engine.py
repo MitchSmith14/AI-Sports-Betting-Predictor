@@ -212,6 +212,13 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
+    # Calculate defensive rate stats FIRST before calculating league/opp averages!
+    team_def_stats["comp_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["completions"] / team_def_stats["attempts"], 0.65)
+    team_def_stats["pass_td_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["passing_tds"] / team_def_stats["attempts"], 0.04)
+    team_def_stats["int_rate_forced"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["interceptions"] / team_def_stats["attempts"], 0.02)
+    team_def_stats["rush_td_rate_allowed"] = np.where(team_def_stats["carries"] > 0, team_def_stats["rushing_tds"] / team_def_stats["carries"], 0.03)
+
+    # NOW create the snapshot averages
     league_def = team_def_stats.mean(numeric_only=True)
     opp_def_df = team_def_stats[team_def_stats["opponent_team"] == opp_team]
     opp_def = opp_def_df.mean(numeric_only=True) if not opp_def_df.empty else league_def
@@ -244,11 +251,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
 
     team_std_rush_att = float(off_rush_series.std()) if len(off_rush_series) > 1 and not pd.isna(off_rush_series.std()) else 4.8
     team_std_pass_att = float(off_pass_series.std()) if len(off_pass_series) > 1 and not pd.isna(off_pass_series.std()) else 5.2
-
-    team_def_stats["comp_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["completions"] / team_def_stats["attempts"], 0.65)
-    team_def_stats["pass_td_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["passing_tds"] / team_def_stats["attempts"], 0.04)
-    team_def_stats["int_rate_forced"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["interceptions"] / team_def_stats["attempts"], 0.02)
-    team_def_stats["rush_td_rate_allowed"] = np.where(team_def_stats["carries"] > 0, team_def_stats["rushing_tds"] / team_def_stats["carries"], 0.03)
 
     def_rush_att = opp_def["carries"]
     def_pass_att = opp_def["attempts"]
