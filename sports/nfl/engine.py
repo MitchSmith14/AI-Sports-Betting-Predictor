@@ -200,7 +200,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     if precip_mm > 5.0:
         precip_catch_penalty = 0.95
 
-    # League & Opponent Benchmarks
     team_def_stats = weekly_df.groupby(["opponent_team", "season", "week"]).agg({
         "rushing_yards": "sum", "receiving_yards": "sum", "attempts": "sum",
         "completions": "sum", "passing_tds": "sum", "interceptions": "sum",
@@ -282,8 +281,9 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         dvp_rush_yd_factor = 1.0
         dvp_rush_td_factor = def_rush_td_factor
 
-    proj_team_rush = max(12.0, (team_avg_rush_att * def_rush_factor + (-spread_val * 0.45)) * pace_multiplier * wind_rush_boost)
-    proj_team_pass = max(15.0, (team_avg_pass_att * def_pass_factor + (spread_val * 0.55)) * pace_multiplier * wind_pass_penalty)
+    # NEW: Neutral Script Volumes. The linear spread adjustment has been entirely removed from the baseline calculations.
+    neutral_team_rush = max(12.0, (team_avg_rush_att * def_rush_factor) * pace_multiplier * wind_rush_boost)
+    neutral_team_pass = max(15.0, (team_avg_pass_att * def_pass_factor) * pace_multiplier * wind_pass_penalty)
 
     merged = recent_player_games.merge(team_weekly_off, on=["recent_team", "season", "week"], suffixes=("", "_team"))
     if merged.empty:
@@ -297,19 +297,12 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     merged["rec_share"] = np.where(merged["attempts_team"] > 0, merged["targets"] / merged["attempts_team"], 0.0)
     merged["pass_share"] = np.where(merged["attempts_team"] > 0, merged["attempts"] / merged["attempts_team"], 0.0)
     
-    # -------------------------------------------------------------
-    # NEW: ROUTES RUN & TPRR CALCULATION
-    # -------------------------------------------------------------
-    # Extract routes column if it exists; otherwise fallback to an approximation
     route_col = "routes" if "routes" in merged.columns else None
-    
     if route_col and merged[route_col].sum() > 0:
         merged["route_part"] = np.where(merged["attempts_team"] > 0, merged[route_col] / merged["attempts_team"], 0.0)
         merged["tprr"] = np.where(merged[route_col] > 0, merged["targets"] / merged[route_col], 0.0)
     else:
-        # Fallback approximation: estimate routes based on positional snap profiles
         base_rp = 0.85 if player_pos == "WR" else (0.7 if player_pos == "TE" else 0.45)
-        # Scale to ensure route participation mathematically supports their historical target share
         merged["route_part"] = np.minimum(1.0, base_rp * (merged["rec_share"] / 0.15))
         merged["route_part"] = np.where(merged["route_part"] < merged["rec_share"], merged["rec_share"] + 0.05, merged["route_part"])
         
@@ -386,8 +379,9 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
 
     return {
         "player_team": player_team, "player_pos": player_pos, "implied_team_total": implied_team_total,
-        "proj_team_rush": proj_team_rush, "team_rush_std": team_std_rush_att,
-        "proj_team_pass": proj_team_pass, "team_pass_std": team_std_pass_att,
+        "spread_val": spread_val,
+        "proj_team_rush": neutral_team_rush, "team_rush_std": team_std_rush_att,
+        "proj_team_pass": neutral_team_pass, "team_pass_std": team_std_pass_att,
         "opp_rush_share": min(1.0, max(0.0, opp_rush_share)),
         "opp_pass_share": min(1.0, max(0.0, opp_pass_share)),
         "route_part": min(1.0, max(0.0, player_route_part)),
@@ -413,19 +407,28 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
 def run_simulation(num_sims, m):
     np.random.seed(42)
     
-    team_rush = np.maximum(10, np.random.normal(m["proj_team_rush"], m["team_rush_std"], num_sims).astype(int))
-    team_pass = np.maximum(15, np.random.normal(m["proj_team_pass"], m["team_pass_std"], num_sims).astype(int))
+    # -------------------------------------------------------------
+    # NEW: DYNAMIC 4th-QUARTER GAME SCRIPT GENERATION
+    # -------------------------------------------------------------
+    # 1. Simulate the precise final score margin for all 10,000 games
+    expected_margin = -m["spread_val"]  # A -3.5 spread means expected margin is +3.5
+    sim_margins = np.random.normal(expected_margin, 13.5, num_sims)
+    
+    # 2. Shift play-calling volume based on score disparity (PROE mechanics)
+    script_rush_shift = np.clip(sim_margins * 0.45, -10.0, 12.0)
+    script_pass_shift = np.clip(-sim_margins * 0.40, -10.0, 14.0)
+
+    dynamic_rush_proj = m["proj_team_rush"] + script_rush_shift
+    dynamic_pass_proj = m["proj_team_pass"] + script_pass_shift
+
+    # 3. Generate the script-adjusted team volume
+    team_rush = np.maximum(5, np.random.normal(dynamic_rush_proj, m["team_rush_std"])).astype(int)
+    team_pass = np.maximum(10, np.random.normal(dynamic_pass_proj, m["team_pass_std"])).astype(int)
 
     carries = np.random.binomial(n=team_rush, p=m["opp_rush_share"])
     
-    # -------------------------------------------------------------
-    # NEW: 2-STEP TARGET GENERATION (ROUTES -> TARGETS)
-    # -------------------------------------------------------------
-    # Step 1: Did the player run a route on the pass play?
     player_routes = np.random.binomial(n=team_pass, p=m["route_part"])
-    # Step 2: Did they earn a target on that route?
     targets = np.random.binomial(n=player_routes, p=m["tprr"])
-    # Cap safely at team pass volume to prevent impossible math tails
     targets = np.minimum(targets, team_pass)
 
     receptions = np.random.binomial(n=targets, p=m["catch_rate"])
