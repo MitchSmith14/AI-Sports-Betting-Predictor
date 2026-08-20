@@ -1,5 +1,6 @@
 # sports/nfl/data_ingestion.py
 
+import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -11,12 +12,16 @@ try:
 except ImportError:
     HAS_NFLREADPY = False
 
+def get_active_seasons():
+    current_year = datetime.date.today().year
+    return [current_year - 2, current_year - 1, current_year]
+
 @st.cache_data(ttl=3600, show_spinner="Loading NFL data...")
 def load_nfl_data():
     if not HAS_NFLREADPY:
         return pd.DataFrame()
     dfs = []
-    for season in [2024, 2025, 2026]:
+    for season in get_active_seasons():
         try:
             season_df = nfl.load_player_stats([season]).to_pandas()
             if not season_df.empty:
@@ -51,39 +56,131 @@ def load_nfl_data():
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
+@st.cache_data(ttl=86400, show_spinner="Loading official NFL depth charts...")
+def load_depth_chart_data():
+    """Loads official NFL depth chart hierarchy."""
+    if not HAS_NFLREADPY:
+        return pd.DataFrame()
+    for season in reversed(get_active_seasons()):
+        try:
+            dc = nfl.load_depth_charts([season]).to_pandas()
+            if not dc.empty:
+                if "full_name" in dc.columns and "player_name" not in dc.columns:
+                    dc["player_name"] = dc["full_name"]
+                return dc
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+@st.cache_data(ttl=86400, show_spinner="Loading official NFL rosters...")
+def load_roster_data():
+    if not HAS_NFLREADPY:
+        return pd.DataFrame()
+    for season in reversed(get_active_seasons()):
+        try:
+            rosters = nfl.load_rosters([season]).to_pandas()
+            if not rosters.empty:
+                if "full_name" in rosters.columns and "player_name" not in rosters.columns:
+                    rosters["player_name"] = rosters["full_name"]
+                return rosters
+        except Exception:
+            continue
+    return pd.DataFrame()
+
 @st.cache_data(ttl=3600, show_spinner="Loading schedules...")
 def load_schedule_data():
     if not HAS_NFLREADPY:
         return pd.DataFrame()
     try:
-        return nfl.load_schedules([2024, 2025, 2026]).to_pandas()
+        return nfl.load_schedules(get_active_seasons()).to_pandas()
     except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=1800, show_spinner="Loading injury reports...")
 def load_injury_data():
-    """Loads official NFL injury report and IR designations."""
     if not HAS_NFLREADPY:
         return pd.DataFrame()
-    try:
-        injuries = nfl.load_injuries([2025, 2026]).to_pandas()
-        if "full_name" in injuries.columns and "player_name" not in injuries.columns:
-            injuries["player_name"] = injuries["full_name"]
-        return injuries
-    except Exception:
-        return pd.DataFrame()
+    for season in reversed(get_active_seasons()):
+        try:
+            injuries = nfl.load_injuries([season]).to_pandas()
+            if not injuries.empty:
+                if "full_name" in injuries.columns and "player_name" not in injuries.columns:
+                    injuries["player_name"] = injuries["full_name"]
+                return injuries
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+def get_team_qb_depth(team_abbr: str, weekly_df: pd.DataFrame):
+    """
+    Returns ordered QB depth chart (QB1, QB2, QB3) using official depth charts first,
+    falling back to active rosters and game logs if necessary.
+    """
+    clean_team = str(team_abbr).upper().strip()
+    
+    # 1. Primary: Official Depth Chart Table
+    dc_df = load_depth_chart_data()
+    if not dc_df.empty:
+        # Safely identify the column containing the team abbreviation
+        if "club_code" in dc_df.columns:
+            team_dc = dc_df[dc_df["club_code"] == clean_team]
+        elif "team" in dc_df.columns:
+            team_dc = dc_df[dc_df["team"] == clean_team]
+        elif "club" in dc_df.columns:
+            team_dc = dc_df[dc_df["club"] == clean_team]
+        else:
+            team_dc = pd.DataFrame()
+
+        if not team_dc.empty and "position" in team_dc.columns:
+            qb_dc = team_dc[team_dc["position"] == "QB"].copy()
+            if "depth_team" in qb_dc.columns:
+                qb_dc = qb_dc.sort_values("depth_team")
+            ranked_qbs = qb_dc["player_name"].dropna().unique().tolist()
+            if ranked_qbs:
+                return ranked_qbs
+
+    # 2. Secondary: Active Roster Data
+    rosters_df = load_roster_data()
+    if not rosters_df.empty:
+        # Safely identify the column for rosters
+        team_col = "team" if "team" in rosters_df.columns else ("club" if "club" in rosters_df.columns else None)
+        if team_col:
+            active_team_roster = rosters_df[rosters_df[team_col] == clean_team]
+            if not active_team_roster.empty and "position" in active_team_roster.columns:
+                qbs_on_roster = active_team_roster[active_team_roster["position"] == "QB"]["player_name"].dropna().unique().tolist()
+                if qbs_on_roster:
+                    qb_stats = weekly_df[weekly_df["player_name"].isin(qbs_on_roster)]
+                    if not qb_stats.empty:
+                        max_season = qb_stats["season"].max()
+                        recent_stats = qb_stats[qb_stats["season"] == max_season]
+                        ranked = recent_stats.groupby("player_name")["attempts"].sum().sort_values(ascending=False).index.tolist()
+                        for qb in qbs_on_roster:
+                            if qb not in ranked:
+                                ranked.append(qb)
+                        return ranked
+                    return qbs_on_roster
+
+    # 3. Fallback: Recent Box Scores
+    qbs = weekly_df[weekly_df["position"] == "QB"].copy()
+    if qbs.empty: return []
+    latest_teams = qbs.sort_values(["season", "week"]).groupby("player_name")["recent_team"].last()
+    current_team_qbs = latest_teams[latest_teams == clean_team].index.tolist()
+    team_qbs = qbs[(qbs["player_name"].isin(current_team_qbs)) & (qbs["recent_team"] == clean_team)]
+    if team_qbs.empty: return current_team_qbs
+    max_season = team_qbs["season"].max()
+    recent_qbs = team_qbs[team_qbs["season"] == max_season]
+    return recent_qbs.groupby("player_name")["attempts"].sum().sort_values(ascending=False).index.tolist()
 
 def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: pd.DataFrame, current_week=None):
-    """
-    Identifies all players on a team who are on the injury report.
-    Returns every position without filtering out low-volume players.
-    """
     if injury_df is None or injury_df.empty:
         return []
 
     clean_team = str(team_abbr).upper().strip()
-    team_injuries = injury_df[injury_df["team"] == clean_team].copy()
-    
+    team_col = "team" if "team" in injury_df.columns else ("club" if "club" in injury_df.columns else "club_code")
+    if team_col not in injury_df.columns:
+        return []
+
+    team_injuries = injury_df[injury_df[team_col] == clean_team].copy()
     if team_injuries.empty:
         return []
 
@@ -93,7 +190,6 @@ def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: p
             team_injuries = week_injuries
 
     report_col = "report_status" if "report_status" in team_injuries.columns else ("status" if "status" in team_injuries.columns else None)
-    
     players_list = []
     seen = set()
 
@@ -112,7 +208,6 @@ def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: p
             seen.add(p_name)
             pos = str(row.get("position", "UNK")).upper()
             
-            # Fetch historical volume for the UI impact display
             if not weekly_df.empty:
                 p_stats = weekly_df[(weekly_df["recent_team"] == clean_team) & (weekly_df["player_name"] == p_name)]
                 tot_att = p_stats["attempts"].sum() if not p_stats.empty else 0
@@ -174,7 +269,7 @@ def get_upcoming_matchup(team_abbr, schedules_data):
         'gameday': next_game['gameday'],
         'roof': "Dome" if roof.lower() in ['dome', 'closed'] else "Outdoor",
         'week': next_game.get('week', 1),
-        'season': next_game.get('season', 2026)
+        'season': next_game.get('season', datetime.date.today().year)
     }
 
 def get_team_colors(team_abbr: str, teams_metadata) -> dict:
@@ -182,7 +277,8 @@ def get_team_colors(team_abbr: str, teams_metadata) -> dict:
     if teams_metadata is not None and not teams_metadata.empty:
         match = teams_metadata[teams_metadata["team_abbr"] == abbr]
         if not match.empty:
-            p_col, s_col = match.iloc[0].get("team_color", None), match.iloc[0].get("team_color2", None)
+            p_col = match.iloc[0].get("team_color", None)
+            s_col = match.iloc[0].get("team_color2", None)
             if pd.notna(p_col) and str(p_col).startswith("#"):
                 return {"primary": p_col, "secondary": s_col if (pd.notna(s_col) and str(s_col).startswith("#")) else "#1E1E1E"}
     return NFL_TEAM_COLORS.get(abbr, {"primary": "#1E293B", "secondary": "#475569"})

@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sports.nfl.data_ingestion import get_team_qb_depth
 
 def get_ema(series, span=4, default=0.0):
     if series is None or len(series) == 0 or series.dropna().empty:
@@ -10,7 +11,7 @@ def get_ema(series, span=4, default=0.0):
     val = series.dropna().ewm(span=span, min_periods=1).mean().iloc[-1]
     return default if pd.isna(val) else float(val)
 
-@st.cache_data
+@st.cache_data(ttl=1800)
 def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
     available_seasons = sorted(weekly_data["season"].unique(), reverse=True)
     def_season = available_seasons[0] if available_seasons else 2025
@@ -101,7 +102,7 @@ def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
 
     return result_dict
 
-@st.cache_data
+@st.cache_data(ttl=1800)
 def calculate_offense_summary(weekly_data, target_team):
     available_seasons = sorted(weekly_data["season"].unique(), reverse=True)
     off_season = available_seasons[0] if available_seasons else 2025
@@ -171,7 +172,7 @@ def calculate_offense_summary(weekly_data, target_team):
         "total_teams": len(team_season_off)
     }
 
-@st.cache_data
+@st.cache_data(ttl=1800)
 def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, weather_dict, weekly_df, inactive_players=None, coverage_scheme="Neutral"):
     if inactive_players is None:
         inactive_players = []
@@ -182,7 +183,55 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     player_team = recent_player_games["recent_team"].iloc[-1] if len(recent_player_games) > 0 else "SF"
     player_pos = recent_player_games["position"].iloc[-1] if ("position" in recent_player_games.columns and len(recent_player_games) > 0) else "RB"
 
-    # --- 1. TEAM LEVEL AGGREGATIONS ---
+    # --- 1. RESOLVE STARTING QB & BACKUP DELTA ---
+    qb_depth = get_team_qb_depth(player_team, weekly_df)
+    primary_qb = qb_depth[0] if qb_depth else "Starting QB"
+    
+    available_qbs = [qb for qb in qb_depth if qb not in inactive_players]
+    active_qb = available_qbs[0] if available_qbs else (primary_qb if primary_qb not in inactive_players else "Backup QB")
+    is_backup_qb_active = (active_qb != primary_qb)
+
+    qb_comp_mult = 1.0
+    qb_ypa_mult = 1.0
+    qb_epa_mult = 1.0
+    qb_int_mult = 1.0
+    qb_volume_pass_shift = 0.0
+    qb_volume_rush_shift = 0.0
+
+    if is_backup_qb_active:
+        backup_stats = weekly_df[(weekly_df["player_name"] == active_qb) & (weekly_df["attempts"] > 0)].copy()
+        if not backup_stats.empty and backup_stats["attempts"].sum() >= 25:
+            b_comp_rate = backup_stats["completions"].sum() / backup_stats["attempts"].sum()
+            b_ypa = backup_stats["passing_yards"].sum() / backup_stats["attempts"].sum()
+            b_epa = backup_stats["passing_epa"].sum() / backup_stats["attempts"].sum()
+            b_int_rate = backup_stats["interceptions"].sum() / backup_stats["attempts"].sum()
+        else:
+            b_comp_rate = 0.585
+            b_ypa = 6.10
+            b_epa = -0.12
+            b_int_rate = 0.032
+
+        starter_stats = weekly_df[(weekly_df["player_name"] == primary_qb) & (weekly_df["attempts"] > 0)].copy()
+        if not starter_stats.empty and starter_stats["attempts"].sum() >= 25:
+            s_comp_rate = starter_stats["completions"].sum() / starter_stats["attempts"].sum()
+            s_ypa = starter_stats["passing_yards"].sum() / starter_stats["attempts"].sum()
+            s_epa = starter_stats["passing_epa"].sum() / starter_stats["attempts"].sum()
+            s_int_rate = starter_stats["interceptions"].sum() / starter_stats["attempts"].sum()
+        else:
+            s_comp_rate = 0.665
+            s_ypa = 7.40
+            s_epa = 0.08
+            s_int_rate = 0.018
+
+        qb_comp_mult = min(1.05, max(0.80, b_comp_rate / max(0.4, s_comp_rate)))
+        qb_ypa_mult = min(1.05, max(0.75, b_ypa / max(4.0, s_ypa)))
+        qb_epa_mult = min(1.10, max(0.70, 1.0 + (b_epa - s_epa) * 0.5))
+        qb_int_mult = min(1.80, max(0.80, b_int_rate / max(0.005, s_int_rate)))
+        
+        qb_volume_pass_shift = -3.5
+        qb_volume_rush_shift = 3.0
+
+    # --- 2. TEAM LEVEL AGGREGATIONS ---
     team_weekly_off = weekly_df.groupby(["recent_team", "season", "week"]).agg({
         "attempts": "sum", "carries": "sum", "sacks": "sum", "rushing_yards": "sum",
         "rushing_tds": "sum", "passing_tds": "sum", "rushing_epa": "sum", "passing_epa": "sum"
@@ -203,7 +252,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     if precip_mm > 5.0:
         precip_catch_penalty = 0.95
 
-    # League & Opponent Benchmarks
     team_def_stats = weekly_df.groupby(["opponent_team", "season", "week"]).agg({
         "rushing_yards": "sum", "receiving_yards": "sum", "attempts": "sum",
         "completions": "sum", "passing_tds": "sum", "interceptions": "sum",
@@ -285,10 +333,10 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         dvp_rush_yd_factor = 1.0
         dvp_rush_td_factor = def_rush_td_factor
 
-    neutral_team_rush = max(12.0, (team_avg_rush_att * def_rush_factor) * pace_multiplier * wind_rush_boost)
-    neutral_team_pass = max(15.0, (team_avg_pass_att * def_pass_factor) * pace_multiplier * wind_pass_penalty)
+    neutral_team_rush = max(12.0, (team_avg_rush_att * def_rush_factor + qb_volume_rush_shift) * pace_multiplier * wind_rush_boost)
+    neutral_team_pass = max(15.0, (team_avg_pass_att * def_pass_factor + qb_volume_pass_shift) * pace_multiplier * wind_pass_penalty)
 
-    # --- 2. COLUMN CREATION IN MERGED DATAFRAME ---
+    # --- 3. COLUMN CREATION IN MERGED DATAFRAME ---
     merged = recent_player_games.merge(team_weekly_off, on=["recent_team", "season", "week"], suffixes=("", "_team"))
     if merged.empty:
         merged = recent_player_games.copy()
@@ -329,7 +377,7 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     else:
         merged["adot"] = np.nan
 
-    # --- 3. EXPONENTIAL MOVING AVERAGES ---
+    # --- 4. EXPONENTIAL MOVING AVERAGES ---
     player_route_part = get_ema(merged["route_part"], span=4, default=(0.85 if player_pos == "WR" else 0.5))
     player_tprr = get_ema(merged["tprr"], span=4, default=0.20)
     opp_rush_share = get_ema(merged["rush_share"], span=4, default=(0.5 if player_pos == "RB" else 0.0))
@@ -347,11 +395,9 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     raw_ypt = get_ema(merged[merged["receptions"] > 0]["ypt"], span=4, default=8.0)
     raw_ypa = get_ema(merged[merged["attempts"] > 0]["ypa"], span=4, default=7.0)
     
-    # REQUIRED BASELINE YARDAGE DEFINITIONS
     ypc_base = max(3.0, raw_ypc)
     ypt_base = max(5.0, raw_ypt)
     ypa_base = max(4.0, raw_ypa)
-    
     int_rate_base = (get_ema(merged[merged["attempts"] > 0]["int_rate"], span=4, default=0.02) * 0.75) + 0.005
 
     if air_yards_col:
@@ -360,7 +406,7 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         raw_ypt_est = merged["receiving_yards"].sum() / max(1.0, merged["targets"].sum())
         player_adot = max(2.5, min(16.0, raw_ypt_est * 1.15))
 
-    # --- 4. VACATED VOLUME ENGINE ---
+    # --- 5. VACATED VOLUME ENGINE ---
     vacated_rush_share = 0.0
     vacated_rec_share = 0.0
     vacated_rz_rush = 0.0
@@ -390,7 +436,7 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         opp_rush_share = min(1.0, opp_rush_share / max(0.01, (1.0 - vacated_rush_share)))
         rz_rush_share = min(1.0, rz_rush_share / max(0.01, (1.0 - vacated_rz_rush)))
 
-    # --- 5. COVERAGE SCHEME SPLITS ---
+    # --- 6. COVERAGE SCHEME SPLITS ---
     scheme_tprr_mult = 1.0
     scheme_rec_eff_mult = 1.0
     scheme_catch_mult = 1.0
@@ -422,12 +468,12 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
             scheme_tprr_mult = 1.12
 
     player_tprr = min(1.0, player_tprr * scheme_tprr_mult)
-    raw_catch_rate = min(1.0, raw_catch_rate * scheme_catch_mult)
+    raw_catch_rate = min(1.0, raw_catch_rate * scheme_catch_mult * qb_comp_mult)
 
-    # --- 6. FINAL EFFICIENCY & VARIANCE MULTIPLIERS ---
+    # --- 7. FINAL EFFICIENCY & VARIANCE MULTIPLIERS ---
     epa_rush_mult = max(0.7, min(1.3, 1.0 + (rush_epa_delta * 0.4) + (player_rush_epa * 0.15)))
-    epa_pass_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_pass_epa * 0.15)))
-    epa_rec_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_rec_epa * 0.15)))
+    epa_pass_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_pass_epa * 0.15))) * qb_epa_mult
+    epa_rec_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_rec_epa * 0.15))) * qb_epa_mult
     
     adot_variance_mult = min(1.65, max(0.65, 1.0 + ((player_adot - 8.5) * 0.055)))
 
@@ -437,13 +483,13 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     scaled_rec_eff_std = float(np.nan_to_num(ypt_std, nan=3.5)) * adot_variance_mult
 
     adj_catch_rate = raw_catch_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
-    adj_comp_rate = raw_comp_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
+    adj_comp_rate = (raw_comp_rate * qb_comp_mult) * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
     
-    adj_pass_eff_mean = ypa_base * def_pass_yd_factor * efficiency_multiplier * epa_pass_mult * (1 - ((pass_trench_factor - 1) * 0.05)) * wind_pass_penalty
-    adj_rec_eff_mean = ypt_base * dvp_rec_yd_factor * efficiency_multiplier * epa_rec_mult * scheme_rec_eff_mult * wind_pass_penalty
+    adj_pass_eff_mean = ypa_base * qb_ypa_mult * def_pass_yd_factor * efficiency_multiplier * epa_pass_mult * (1 - ((pass_trench_factor - 1) * 0.05)) * wind_pass_penalty
+    adj_rec_eff_mean = ypt_base * qb_ypa_mult * dvp_rec_yd_factor * efficiency_multiplier * epa_rec_mult * scheme_rec_eff_mult * wind_pass_penalty
     adj_rush_eff_mean = ypc_base * run_trench_factor * epa_rush_mult * scheme_rush_eff_mult * (dvp_rush_yd_factor if player_pos == "RB" else 1.0) * efficiency_multiplier
 
-    adj_int_rate = ((int_rate_base * def_int_factor) / efficiency_multiplier) * (1 + ((pass_trench_factor - 1) * 0.15))
+    adj_int_rate = ((int_rate_base * qb_int_mult * def_int_factor) / efficiency_multiplier) * (1 + ((pass_trench_factor - 1) * 0.15))
     if wind_mph > 15.0:
         adj_int_rate *= 1.25 
 
@@ -472,10 +518,12 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         "def_pass_td_factor": dvp_rec_td_factor,
         "int_rate": min(1.0, max(0.0, adj_int_rate)),
         "vacated_target_share": vacated_rec_share,
-        "vacated_rush_share": vacated_rush_share
+        "vacated_rush_share": vacated_rush_share,
+        "projected_qb": active_qb,
+        "is_backup_qb": is_backup_qb_active
     }
 
-@st.cache_data
+@st.cache_data(ttl=1800)
 def run_simulation(num_sims, m):
     np.random.seed(42)
     

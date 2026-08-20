@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 from sports.nfl.data_ingestion import (
-    load_nfl_data, load_schedule_data, load_teams_data, load_injury_data,
+    load_nfl_data, load_schedule_data, load_teams_data, load_injury_data, load_roster_data,
     get_upcoming_matchup, get_team_injury_report, get_team_colors, get_team_logo_url, get_player_headshot_url
 )
 from sports.nfl.config import NFL_STADIUM_COORDS, TEAM_ABBR_TO_NAME
@@ -51,6 +51,7 @@ def render_nfl():
     schedules_df = load_schedule_data()
     teams_metadata = load_teams_data()
     injuries_df = load_injury_data()
+    rosters_df = load_roster_data()
 
     if weekly_df.empty:
         st.warning("No NFL data available. Please verify nflreadpy is installed and configured.")
@@ -92,7 +93,6 @@ def render_nfl():
     off_injuries = get_team_injury_report(player_team_abbr, injuries_df, weekly_df, current_matchup_week)
     def_injuries = get_team_injury_report(selected_opponent, injuries_df, weekly_df, current_matchup_week)
 
-    # Only players confirmed OUT / IR are defaulted into the Vacated Volume engine
     auto_confirmed_inactives = [p["player_name"] for p in off_injuries if p["is_out"] and p["player_name"] != selected_player]
 
     if 'current_player' not in st.session_state or st.session_state['current_player'] != selected_player:
@@ -116,8 +116,14 @@ def render_nfl():
         simulations = st.slider("Monte Carlo Sims", 1000, 50000, 10000, step=1000)
 
     with st.sidebar.expander("🚑 Active Inactives & Vacated Volume", expanded=True):
-        st.caption("Players listed below are treated as OUT. Their historical volume is redistributed to active teammates:")
-        roster = sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
+        st.caption("Players listed below are treated as OUT. Their volume & QB impact are calculated dynamically:")
+        
+        # Use Official Roster API if available, else fallback to historic box scores
+        if not rosters_df.empty:
+            roster = sorted(rosters_df[rosters_df["team"] == player_team_abbr]["player_name"].dropna().unique())
+        else:
+            roster = sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
+            
         if selected_player in roster: roster.remove(selected_player)
         
         active_inactives = [p for p in st.session_state.get('inactive_selections', auto_confirmed_inactives) if p in roster]
@@ -186,21 +192,22 @@ def render_nfl():
             logo_url=def_team_logo, subtitle=f"Spread: {st.session_state['spread_input']} | Total: {st.session_state['total_input']}"
         )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Matchup", f"{player_team_abbr} {'vs' if matchup_info and matchup_info['is_home'] else '@'} {selected_opponent}")
-    c2.metric("Date", f"Week {matchup_info['week']} - {matchup_info['gameday']}" if matchup_info else "Simulated Environment")
-    c3.metric("Game Environment", f"Spread: {st.session_state['spread_input']} | Total: {st.session_state['total_input']}")
-    c4.metric("Weather", "🏟️ Dome (Indoors)" if current_weather['condition'] == "Dome" else f"💨 {current_weather['wind_mph']} mph | 🌧️ {current_weather['precip_mm']} mm", help=current_weather['condition'])
-    st.divider()
-
     # Simulation calculations
     matchup = calculate_matchup_baselines(selected_player, selected_opponent, st.session_state['spread_input'], st.session_state['total_input'], current_weather, weekly_df, selected_inactives, coverage_scheme)
     def_stats = calculate_defense_summary(weekly_df, selected_opponent, player_pos_detected)
     off_stats = calculate_offense_summary(weekly_df, matchup["player_team"])
     df_sims = run_simulation(simulations, matchup)
 
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Matchup", f"{player_team_abbr} {'vs' if matchup_info and matchup_info['is_home'] else '@'} {selected_opponent}")
+    qb_badge = f"{matchup['projected_qb']} ⚠️ (Backup)" if matchup["is_backup_qb"] else f"{matchup['projected_qb']}"
+    c2.metric("Projected QB", qb_badge)
+    c3.metric("Game Environment", f"Spread: {st.session_state['spread_input']} | Total: {st.session_state['total_input']}")
+    c4.metric("Weather", "🏟️ Dome (Indoors)" if current_weather['condition'] == "Dome" else f"💨 {current_weather['wind_mph']} mph | 🌧️ {current_weather['precip_mm']} mm", help=current_weather['condition'])
+    st.divider()
+
     # -------------------------------------------------------------
-    # MATCHUP INJURY & STATUS REPORT BANNER
+    # MATCHUP INJURY REPORT BANNER
     # -------------------------------------------------------------
     with st.expander("🚑 Matchup Injury & Status Report", expanded=(len(off_injuries) > 0 or len(def_injuries) > 0)):
         inj_col1, inj_col2 = st.columns(2)
@@ -213,7 +220,7 @@ def render_nfl():
             elif p["position"] in ["WR", "TE"]:
                 return f"~{p['targets']} Targets"
             else:
-                return "Trench / Coverage Impact"
+                return "Trench / Line Impact"
 
         with inj_col1:
             st.markdown(f"**{player_team_abbr} Full Injury Report:**")
