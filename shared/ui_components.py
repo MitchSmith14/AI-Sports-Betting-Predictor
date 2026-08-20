@@ -33,17 +33,14 @@ def render_team_card(title: str, name: str, team_abbr: str, primary_color: str, 
 def render_prop_row(df_sims: pd.DataFrame, stat1_col: str, stat1_name: str, stat1_line: float, stat1_odds: int, stat2_col: str, stat2_name: str, stat2_line: float, stat2_odds: int, context_metrics: dict = None):
     """
     Renders the side-by-side EV calculations, passing generic context metrics.
-    context_metrics = {"Team Shots/G": 32.1, "Player Ice Time": 19.5}
     """
     mean1, median1 = df_sims[stat1_col].mean(), df_sims[stat1_col].median()
     win_prob1 = (df_sims[stat1_col] > stat1_line).mean()
     decimal_odds1 = ((100 / abs(stat1_odds)) + 1 if stat1_odds < 0 else (stat1_odds / 100) + 1)
-    ev1 = (win_prob1 * (decimal_odds1 - 1)) - (1 - win_prob1)
 
     mean2 = df_sims[stat2_col].mean()
     win_prob2 = (df_sims[stat2_col] > stat2_line).mean()
     decimal_odds2 = ((100 / abs(stat2_odds)) + 1 if stat2_odds < 0 else (stat2_odds / 100) + 1)
-    ev2 = (win_prob2 * (decimal_odds2 - 1)) - (1 - win_prob2)
 
     st.markdown("---")
     st.markdown(f"#### 📐 {stat1_name} vs. {stat2_name} Results")
@@ -64,7 +61,10 @@ def render_prop_row(df_sims: pd.DataFrame, stat1_col: str, stat1_name: str, stat
             })
         else:
             metrics_df = pd.DataFrame({"Metric": [f"Sim {stat1_name}", f"Sim {stat2_name}"], "Average": [mean1, mean2]})
-        st.dataframe(metrics_df.style.format({"Average": "{:.2f}"}), use_container_width=True)
+        
+        # FIX: Safely format floats and ignore strings (like our "12.5%" Vacated Share)
+        metrics_df["Average"] = metrics_df["Average"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else str(x))
+        st.dataframe(metrics_df, use_container_width=True)
 
     with c_yard:
         st.write(f"**{stat1_name} Distribution**")
