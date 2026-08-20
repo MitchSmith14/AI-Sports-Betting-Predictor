@@ -272,7 +272,12 @@ def render_nfl():
                 "rec_tds", "Receiving TDs",
                 c3.number_input("Receiving TDs Line", value=st.session_state['rec_tds_input'], step=0.5, key="rectr"),
                 c4.number_input("Receiving TD Odds", value=st.session_state['rec_td_odds_input'], step=5, key="rector"),
-                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Targets": df_sims["targets"].mean(), "Receptions": df_sims["receptions"].mean()}
+                context_metrics={
+                    "Team Pass Att": df_sims["team_pass"].mean(),
+                    "Player Targets": df_sims["targets"].mean(),
+                    "Receptions": df_sims["receptions"].mean(),
+                    "Avg Target Depth (aDOT)": matchup["player_adot"]
+                }
             )
     else:
         tab1, = st.tabs(["🤲 Receiving"])
@@ -286,7 +291,12 @@ def render_nfl():
                 "rec_tds", "Receiving TDs",
                 c3.number_input("Receiving TDs Line", value=st.session_state['rec_tds_input'], step=0.5, key="rectw"),
                 c4.number_input("Receiving TD Odds", value=st.session_state['rec_td_odds_input'], step=5, key="rectow"),
-                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Targets": df_sims["targets"].mean(), "Receptions": df_sims["receptions"].mean()}
+                context_metrics={
+                    "Team Pass Att": df_sims["team_pass"].mean(),
+                    "Player Targets": df_sims["targets"].mean(),
+                    "Receptions": df_sims["receptions"].mean(),
+                    "Avg Target Depth (aDOT)": matchup["player_adot"]
+                }
             )
 
     st.divider()

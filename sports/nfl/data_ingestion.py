@@ -42,7 +42,8 @@ def load_nfl_data():
     numeric_cols = [
         "attempts", "completions", "passing_yards", "passing_tds", "interceptions",
         "sacks", "carries", "rushing_yards", "rushing_tds", "targets",
-        "receptions", "receiving_yards", "receiving_tds"
+        "receptions", "receiving_yards", "receiving_tds",
+        "air_yards", "receiving_air_yards", "passing_air_yards"
     ]
     for col in numeric_cols:
         if col in df.columns:

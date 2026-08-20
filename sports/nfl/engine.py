@@ -280,6 +280,22 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     merged["comp_rate"] = np.where(merged["attempts"] > 0, merged["completions"] / merged["attempts"], 0.0)
     merged["int_rate"] = np.where(merged["attempts"] > 0, merged["interceptions"] / merged["attempts"], 0.0)
 
+    # -------------------------------------------------------------
+    # aDOT CALCULATION & DEPTH VARIANCE SCALING
+    # -------------------------------------------------------------
+    air_yards_col = "receiving_air_yards" if "receiving_air_yards" in merged.columns else ("air_yards" if "air_yards" in merged.columns else None)
+    if air_yards_col:
+        merged["adot"] = np.where(merged["targets"] > 0, merged[air_yards_col] / merged["targets"], np.nan)
+        player_adot = get_ema(merged[merged["targets"] > 0]["adot"], span=4, default=(10.5 if player_pos == "WR" else (7.0 if player_pos == "TE" else 3.5)))
+    else:
+        # Fallback estimation using yards-per-target
+        raw_ypt_est = merged["receiving_yards"].sum() / max(1.0, merged["targets"].sum())
+        player_adot = max(2.5, min(16.0, raw_ypt_est * 1.15))
+
+    # Variance Multiplier: stretches Log-Normal spread for deep threats, compresses for possession receivers
+    # League benchmark aDOT ~ 8.5 yards
+    adot_variance_mult = min(1.65, max(0.65, 1.0 + ((player_adot - 8.5) * 0.055)))
+
     opp_rush_share = get_ema(merged["rush_share"], span=4, default=(0.5 if player_pos == "RB" else 0.0))
     opp_rec_share = get_ema(merged["rec_share"], span=4, default=(0.12 if player_pos == "RB" else 0.22))
     opp_pass_share = get_ema(merged["pass_share"], span=4, default=(1.0 if player_pos == "QB" else 0.0))
@@ -303,6 +319,9 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     ypt_std = (merged["receiving_yards"].std() / max(1.0, merged["receptions"].mean())) if len(merged) > 1 else 3.5
     ypa_std = (merged["passing_yards"].std() / max(1.0, merged["attempts"].mean())) if len(merged) > 1 else 2.5
 
+    # Scale receiving standard deviation by aDOT profile
+    scaled_rec_eff_std = float(np.nan_to_num(ypt_std, nan=3.5)) * adot_variance_mult
+
     adj_catch_rate = raw_catch_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
     adj_comp_rate = raw_comp_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
     
@@ -325,10 +344,11 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         "rz_target_share": min(1.0, max(0.0, rz_target_share)),
         "catch_rate": min(1.0, max(0.2, adj_catch_rate)),
         "comp_rate": min(1.0, max(0.2, adj_comp_rate)),
+        "player_adot": round(float(player_adot), 1),
         "rush_eff_mean": adj_rush_eff_mean,
         "rush_eff_std": float(np.nan_to_num(ypc_std, nan=2.8)),
         "rec_eff_mean": adj_rec_eff_mean,
-        "rec_eff_std": float(np.nan_to_num(ypt_std, nan=3.5)),
+        "rec_eff_std": scaled_rec_eff_std,
         "pass_eff_mean": adj_pass_eff_mean,
         "pass_eff_std": float(np.nan_to_num(ypa_std, nan=2.5)),
         "def_rush_td_factor": dvp_rush_td_factor,
