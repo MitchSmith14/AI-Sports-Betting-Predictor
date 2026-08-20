@@ -172,7 +172,10 @@ def calculate_offense_summary(weekly_data, target_team):
     }
 
 @st.cache_data
-def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, weather_dict, weekly_df):
+def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, weather_dict, weekly_df, inactive_players=None):
+    if inactive_players is None:
+        inactive_players = []
+
     player_games = weekly_df[weekly_df["player_name"] == player_name].sort_values(["season", "week"])
     recent_player_games = player_games.tail(12).copy()
     
@@ -281,7 +284,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         dvp_rush_yd_factor = 1.0
         dvp_rush_td_factor = def_rush_td_factor
 
-    # NEW: Neutral Script Volumes. The linear spread adjustment has been entirely removed from the baseline calculations.
     neutral_team_rush = max(12.0, (team_avg_rush_att * def_rush_factor) * pace_multiplier * wind_rush_boost)
     neutral_team_pass = max(15.0, (team_avg_pass_att * def_pass_factor) * pace_multiplier * wind_pass_penalty)
 
@@ -305,16 +307,55 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         base_rp = 0.85 if player_pos == "WR" else (0.7 if player_pos == "TE" else 0.45)
         merged["route_part"] = np.minimum(1.0, base_rp * (merged["rec_share"] / 0.15))
         merged["route_part"] = np.where(merged["route_part"] < merged["rec_share"], merged["rec_share"] + 0.05, merged["route_part"])
-        
         merged["est_routes"] = merged["attempts_team"] * merged["route_part"]
         merged["tprr"] = np.where(merged["est_routes"] > 0, merged["targets"] / merged["est_routes"], 0.0)
 
+    # -------------------------------------------------------------
+    # NEW: VACATED VOLUME ENGINE
+    # -------------------------------------------------------------
+    vacated_rush_share = 0.0
+    vacated_rec_share = 0.0
+    vacated_rz_rush = 0.0
+    vacated_rz_tgt = 0.0
+
+    if inactive_players and not weekly_df.empty:
+        inactive_df = weekly_df[(weekly_df["recent_team"] == player_team) & (weekly_df["player_name"].isin(inactive_players))].copy()
+        if not inactive_df.empty:
+            inactive_merged = inactive_df.merge(team_weekly_off, on=["recent_team", "season", "week"], suffixes=("", "_team"))
+            inactive_merged["vac_rush_share"] = np.where(inactive_merged["carries_team"] > 0, inactive_merged["carries"] / inactive_merged["carries_team"], 0.0)
+            inactive_merged["vac_rec_share"] = np.where(inactive_merged["attempts_team"] > 0, inactive_merged["targets"] / inactive_merged["attempts_team"], 0.0)
+            inactive_merged["vac_rz_rush"] = np.where(inactive_merged["rushing_tds_team"] > 0, inactive_merged["rushing_tds"] / inactive_merged["rushing_tds_team"], 0.0)
+            inactive_merged["vac_rz_tgt"] = np.where(inactive_merged["passing_tds_team"] > 0, inactive_merged["receiving_tds"] / inactive_merged["passing_tds_team"], 0.0)
+            
+            # Aggregate the most recent 4 weeks of vacated shares across all injured players
+            recent_vacated = inactive_merged.sort_values(["season", "week"]).tail(4 * len(inactive_players))
+            vacated_rush_share = min(0.8, recent_vacated.groupby("player_name")["vac_rush_share"].mean().sum())
+            vacated_rec_share = min(0.6, recent_vacated.groupby("player_name")["vac_rec_share"].mean().sum())
+            vacated_rz_rush = min(0.8, recent_vacated.groupby("player_name")["vac_rz_rush"].mean().sum())
+            vacated_rz_tgt = min(0.6, recent_vacated.groupby("player_name")["vac_rz_tgt"].mean().sum())
+
+    # Player Base Shares
     player_route_part = get_ema(merged["route_part"], span=4, default=(0.85 if player_pos == "WR" else 0.5))
     player_tprr = get_ema(merged["tprr"], span=4, default=0.20)
+    opp_rush_share = get_ema(merged["rush_share"], span=4, default=(0.5 if player_pos == "RB" else 0.0))
+    opp_pass_share = get_ema(merged["pass_share"], span=4, default=(1.0 if player_pos == "QB" else 0.0))
+    rz_rush_share = get_ema(merged["rush_td_share"], span=4, default=(0.4 if player_pos == "RB" else 0.0))
+    rz_target_share = get_ema(merged["rec_td_share"], span=4, default=(0.15 if player_pos in ["WR", "TE"] else 0.05))
+
+    # Apply Proportional Redistribution
+    if vacated_rec_share > 0:
+        # Boost Route Participation (Backups absorb the field time)
+        player_route_part = min(1.0, player_route_part + (vacated_rec_share * 1.25))
+        # Proportional TPRR Expansion
+        player_tprr = min(1.0, player_tprr / max(0.01, (1.0 - vacated_rec_share)))
+        rz_target_share = min(1.0, rz_target_share / max(0.01, (1.0 - vacated_rz_tgt)))
+
+    if vacated_rush_share > 0:
+        opp_rush_share = min(1.0, opp_rush_share / max(0.01, (1.0 - vacated_rush_share)))
+        rz_rush_share = min(1.0, rz_rush_share / max(0.01, (1.0 - vacated_rz_rush)))
 
     merged["rush_td_share"] = np.where(merged["rushing_tds_team"] > 0, merged["rushing_tds"] / merged["rushing_tds_team"], 0.0)
     merged["rec_td_share"] = np.where(merged["passing_tds_team"] > 0, merged["receiving_tds"] / merged["passing_tds_team"], 0.0)
-    
     merged["ypc"] = np.where(merged["carries"] > 0, merged["rushing_yards"] / merged["carries"], 0.0)
     merged["ypt"] = np.where(merged["receptions"] > 0, merged["receiving_yards"] / merged["receptions"], 0.0)
     merged["ypa"] = np.where(merged["attempts"] > 0, merged["passing_yards"] / merged["attempts"], 0.0)
@@ -344,11 +385,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
 
     adot_variance_mult = min(1.65, max(0.65, 1.0 + ((player_adot - 8.5) * 0.055)))
 
-    opp_rush_share = get_ema(merged["rush_share"], span=4, default=(0.5 if player_pos == "RB" else 0.0))
-    opp_pass_share = get_ema(merged["pass_share"], span=4, default=(1.0 if player_pos == "QB" else 0.0))
-    rz_rush_share = get_ema(merged["rush_td_share"], span=4, default=(0.4 if player_pos == "RB" else 0.0))
-    rz_target_share = get_ema(merged["rec_td_share"], span=4, default=(0.15 if player_pos in ["WR", "TE"] else 0.05))
-    
     raw_catch_rate = get_ema(merged[merged["targets"] > 0]["catch_rate"], span=4, default=0.65)
     raw_comp_rate = get_ema(merged[merged["attempts"] > 0]["comp_rate"], span=4, default=0.65)
     raw_ypc = get_ema(merged[merged["carries"] > 0]["ypc"], span=4, default=4.3)
@@ -400,28 +436,24 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         "pass_eff_std": float(np.nan_to_num(ypa_std, nan=2.5)),
         "def_rush_td_factor": dvp_rush_td_factor,
         "def_pass_td_factor": dvp_rec_td_factor,
-        "int_rate": min(1.0, max(0.0, adj_int_rate))
+        "int_rate": min(1.0, max(0.0, adj_int_rate)),
+        "vacated_target_share": vacated_rec_share,
+        "vacated_rush_share": vacated_rush_share
     }
 
 @st.cache_data
 def run_simulation(num_sims, m):
     np.random.seed(42)
     
-    # -------------------------------------------------------------
-    # NEW: DYNAMIC 4th-QUARTER GAME SCRIPT GENERATION
-    # -------------------------------------------------------------
-    # 1. Simulate the precise final score margin for all 10,000 games
-    expected_margin = -m["spread_val"]  # A -3.5 spread means expected margin is +3.5
+    expected_margin = -m["spread_val"]
     sim_margins = np.random.normal(expected_margin, 13.5, num_sims)
     
-    # 2. Shift play-calling volume based on score disparity (PROE mechanics)
     script_rush_shift = np.clip(sim_margins * 0.45, -10.0, 12.0)
     script_pass_shift = np.clip(-sim_margins * 0.40, -10.0, 14.0)
 
     dynamic_rush_proj = m["proj_team_rush"] + script_rush_shift
     dynamic_pass_proj = m["proj_team_pass"] + script_pass_shift
 
-    # 3. Generate the script-adjusted team volume
     team_rush = np.maximum(5, np.random.normal(dynamic_rush_proj, m["team_rush_std"])).astype(int)
     team_pass = np.maximum(10, np.random.normal(dynamic_pass_proj, m["team_pass_std"])).astype(int)
 

@@ -100,6 +100,13 @@ def render_nfl():
         st.session_state['total_input'] = st.number_input("Over/Under Total", value=st.session_state['total_input'], step=0.5)
         simulations = st.slider("Monte Carlo Sims", 1000, 50000, 10000, step=1000)
 
+    with st.sidebar.expander("🚑 Injury & Roster Adjustments", expanded=False):
+        st.caption("Select inactive teammates to dynamically redistribute their vacated volume to your selected player.")
+        # Get all players on the same team, excluding the selected player
+        roster = sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
+        if selected_player in roster: roster.remove(selected_player)
+        inactive_selections = st.multiselect("Inactive Teammates:", roster, default=[])
+
     with st.sidebar.expander("🌤️ Weather Override", expanded=False):
         override_weather = st.checkbox("Manually override weather forecast")
         if override_weather:
@@ -163,13 +170,13 @@ def render_nfl():
     c4.metric("Weather", "🏟️ Dome (Indoors)" if current_weather['condition'] == "Dome" else f"💨 {current_weather['wind_mph']} mph | 🌧️ {current_weather['precip_mm']} mm", help=current_weather['condition'])
     st.divider()
 
-    # Simulation calculations
-    matchup = calculate_matchup_baselines(selected_player, selected_opponent, st.session_state['spread_input'], st.session_state['total_input'], current_weather, weekly_df)
+    # Simulation calculations (Now passing inactive_selections)
+    matchup = calculate_matchup_baselines(selected_player, selected_opponent, st.session_state['spread_input'], st.session_state['total_input'], current_weather, weekly_df, inactive_selections)
     def_stats = calculate_defense_summary(weekly_df, selected_opponent, player_pos_detected)
     off_stats = calculate_offense_summary(weekly_df, matchup["player_team"])
     df_sims = run_simulation(simulations, matchup)
 
-    # Trench profiles (Now 6 Columns for EPA/Play)
+    # Trench profiles
     with st.expander("📊 View Matchup Trench Profiles", expanded=False):
         if off_stats.get("has_data", False):
             st.markdown(f"<div style='display: flex; align-items: center; margin-bottom: 10px;'><img src='{player_team_logo}' width='40' style='margin-right: 12px;'><h4 style='margin: 0; padding: 0;'>{matchup['player_team']} Offensive Profile ({off_stats['season']} Season)</h4></div>", unsafe_allow_html=True)
@@ -250,7 +257,7 @@ def render_nfl():
                 "rush_tds", "Rushing TDs",
                 c3.number_input("Rushing TDs Line", value=st.session_state['rush_tds_input'], step=0.5, key="rtq"),
                 c4.number_input("Rushing TD Odds", value=st.session_state['rush_td_odds_input'], step=5, key="rtoq"),
-                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"]}
+                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"], "Vacated Rush Share": f"{matchup['vacated_rush_share']:.1%}"}
             )
     elif player_pos_detected == "RB":
         tab1, tab2 = st.tabs(["👟 Rushing", "🤲 Receiving"])
@@ -264,7 +271,7 @@ def render_nfl():
                 "rush_tds", "Rushing TDs",
                 c3.number_input("Rushing TDs Line", value=st.session_state['rush_tds_input'], step=0.5, key="rtr"),
                 c4.number_input("Rushing TD Odds", value=st.session_state['rush_td_odds_input'], step=5, key="rtor"),
-                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"]}
+                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"], "Vacated Rush Share": f"{matchup['vacated_rush_share']:.1%}"}
             )
         with tab2:
             st.markdown("##### Configuration")
@@ -279,9 +286,9 @@ def render_nfl():
                 context_metrics={
                     "Team Pass Att": df_sims["team_pass"].mean(),
                     "Player Targets": df_sims["targets"].mean(),
-                    "Receptions": df_sims["receptions"].mean(),
                     "Avg Target Depth (aDOT)": matchup["player_adot"],
-                    "Player EPA/Target": matchup["player_epa"]
+                    "Player EPA/Target": matchup["player_epa"],
+                    "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"
                 }
             )
     else:
@@ -299,9 +306,9 @@ def render_nfl():
                 context_metrics={
                     "Team Pass Att": df_sims["team_pass"].mean(),
                     "Player Targets": df_sims["targets"].mean(),
-                    "Receptions": df_sims["receptions"].mean(),
                     "Avg Target Depth (aDOT)": matchup["player_adot"],
-                    "Player EPA/Target": matchup["player_epa"]
+                    "Player EPA/Target": matchup["player_epa"],
+                    "Vacated Target Share": f"{matchup['vacated_target_share']:.1%}"
                 }
             )
 
