@@ -22,7 +22,8 @@ def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
     team_weekly = season_df.groupby(["opponent_team", "week"]).agg({
         "carries": "sum", "rushing_yards": "sum", "rushing_tds": "sum",
         "attempts": "sum", "completions": "sum", "passing_yards": "sum",
-        "passing_tds": "sum", "sacks": "sum"
+        "passing_tds": "sum", "sacks": "sum",
+        "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
     if len(team_weekly) == 0:
@@ -36,13 +37,19 @@ def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
 
     totals = season_df.groupby("opponent_team").agg({
         "carries": "sum", "rushing_yards": "sum", "attempts": "sum",
-        "completions": "sum", "passing_yards": "sum"
+        "completions": "sum", "passing_yards": "sum",
+        "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
     team_season_def["ypc"] = np.where(totals["carries"] > 0, totals["rushing_yards"] / totals["carries"], 0.0)
     team_season_def["comp_pct"] = np.where(totals["attempts"] > 0, (totals["completions"] / totals["attempts"]) * 100, 0.0)
     team_season_def["ypa"] = np.where(totals["attempts"] > 0, totals["passing_yards"] / totals["attempts"], 0.0)
     
+    # EPA Calculations
+    team_season_def["rush_epa_per_att"] = np.where(totals["carries"] > 0, totals["rushing_epa"] / totals["carries"], 0.0)
+    team_season_def["pass_epa_per_att"] = np.where(totals["attempts"] > 0, totals["passing_epa"] / totals["attempts"], 0.0)
+
+    # Ranks (Defense: Lower EPA allowed is better)
     team_season_def["rush_yds_rank"] = team_season_def["rushing_yards"].rank(ascending=True, method="min").astype(int)
     team_season_def["rush_att_rank"] = team_season_def["carries"].rank(ascending=True, method="min").astype(int)
     team_season_def["ypc_rank"] = team_season_def["ypc"].rank(ascending=True, method="min").astype(int)
@@ -51,6 +58,8 @@ def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
     team_season_def["comp_pct_rank"] = team_season_def["comp_pct"].rank(ascending=True, method="min").astype(int)
     team_season_def["ypa_rank"] = team_season_def["ypa"].rank(ascending=True, method="min").astype(int)
     team_season_def["sacks_rank"] = team_season_def["sacks"].rank(ascending=False, method="min").astype(int)
+    team_season_def["rush_epa_rank"] = team_season_def["rush_epa_per_att"].rank(ascending=True, method="min").astype(int)
+    team_season_def["pass_epa_rank"] = team_season_def["pass_epa_per_att"].rank(ascending=True, method="min").astype(int)
 
     target_row = team_season_def[team_season_def["opponent_team"] == target_team]
     if len(target_row) == 0:
@@ -68,6 +77,8 @@ def calculate_defense_summary(weekly_data, target_team, pos_filter=None):
         "comp_pct": row["comp_pct"], "comp_pct_rank": int(row["comp_pct_rank"]),
         "ypa": row["ypa"], "ypa_rank": int(row["ypa_rank"]),
         "sacks_pg": row["sacks"], "sacks_rank": int(row["sacks_rank"]),
+        "rush_epa_per_att": row["rush_epa_per_att"], "rush_epa_rank": int(row["rush_epa_rank"]),
+        "pass_epa_per_att": row["pass_epa_per_att"], "pass_epa_rank": int(row["pass_epa_rank"]),
         "total_teams": len(team_season_def)
     }
 
@@ -104,7 +115,8 @@ def calculate_offense_summary(weekly_data, target_team):
     team_weekly = season_df.groupby(["recent_team", "week"]).agg({
         "carries": "sum", "rushing_yards": "sum", "rushing_tds": "sum",
         "attempts": "sum", "completions": "sum", "passing_yards": "sum",
-        "passing_tds": "sum", "sacks": "sum"
+        "passing_tds": "sum", "sacks": "sum",
+        "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
     if len(team_weekly) == 0:
@@ -118,13 +130,19 @@ def calculate_offense_summary(weekly_data, target_team):
 
     totals = season_df.groupby("recent_team").agg({
         "carries": "sum", "rushing_yards": "sum", "attempts": "sum",
-        "completions": "sum", "passing_yards": "sum"
+        "completions": "sum", "passing_yards": "sum",
+        "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
     team_season_off["ypc"] = np.where(totals["carries"] > 0, totals["rushing_yards"] / totals["carries"], 0.0)
     team_season_off["comp_pct"] = np.where(totals["attempts"] > 0, (totals["completions"] / totals["attempts"]) * 100, 0.0)
     team_season_off["ypa"] = np.where(totals["attempts"] > 0, totals["passing_yards"] / totals["attempts"], 0.0)
     
+    # EPA Calculations
+    team_season_off["rush_epa_per_att"] = np.where(totals["carries"] > 0, totals["rushing_epa"] / totals["carries"], 0.0)
+    team_season_off["pass_epa_per_att"] = np.where(totals["attempts"] > 0, totals["passing_epa"] / totals["attempts"], 0.0)
+
+    # Ranks (Offense: Higher EPA generated is better)
     team_season_off["rush_yds_rank"] = team_season_off["rushing_yards"].rank(ascending=False, method="min").astype(int)
     team_season_off["rush_att_rank"] = team_season_off["carries"].rank(ascending=False, method="min").astype(int)
     team_season_off["ypc_rank"] = team_season_off["ypc"].rank(ascending=False, method="min").astype(int)
@@ -133,6 +151,8 @@ def calculate_offense_summary(weekly_data, target_team):
     team_season_off["comp_pct_rank"] = team_season_off["comp_pct"].rank(ascending=False, method="min").astype(int)
     team_season_off["ypa_rank"] = team_season_off["ypa"].rank(ascending=False, method="min").astype(int)
     team_season_off["sacks_rank"] = team_season_off["sacks"].rank(ascending=True, method="min").astype(int)
+    team_season_off["rush_epa_rank"] = team_season_off["rush_epa_per_att"].rank(ascending=False, method="min").astype(int)
+    team_season_off["pass_epa_rank"] = team_season_off["pass_epa_per_att"].rank(ascending=False, method="min").astype(int)
 
     target_row = team_season_off[team_season_off["recent_team"] == target_team]
     if len(target_row) == 0:
@@ -150,6 +170,8 @@ def calculate_offense_summary(weekly_data, target_team):
         "comp_pct": row["comp_pct"], "comp_pct_rank": int(row["comp_pct_rank"]),
         "ypa": row["ypa"], "ypa_rank": int(row["ypa_rank"]),
         "sacks_pg": row["sacks"], "sacks_rank": int(row["sacks_rank"]),
+        "rush_epa_per_att": row["rush_epa_per_att"], "rush_epa_rank": int(row["rush_epa_rank"]),
+        "pass_epa_per_att": row["pass_epa_per_att"], "pass_epa_rank": int(row["pass_epa_rank"]),
         "total_teams": len(team_season_off)
     }
 
@@ -163,7 +185,7 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
 
     team_weekly_off = weekly_df.groupby(["recent_team", "season", "week"]).agg({
         "attempts": "sum", "carries": "sum", "sacks": "sum", "rushing_yards": "sum",
-        "rushing_tds": "sum", "passing_tds": "sum"
+        "rushing_tds": "sum", "passing_tds": "sum", "rushing_epa": "sum", "passing_epa": "sum"
     }).reset_index()
 
     implied_team_total = (total_val - spread_val) / 2.0
@@ -181,6 +203,28 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         wind_rush_boost = min(1.2, 1.0 + ((wind_mph - 15.0) * 0.01))
     if precip_mm > 5.0:
         precip_catch_penalty = 0.95
+
+    # League & Opponent EPA Benchmarks
+    team_def_stats = weekly_df.groupby(["opponent_team", "season", "week"]).agg({
+        "rushing_yards": "sum", "receiving_yards": "sum", "attempts": "sum",
+        "completions": "sum", "passing_tds": "sum", "interceptions": "sum",
+        "carries": "sum", "rushing_tds": "sum", "sacks": "sum",
+        "rushing_epa": "sum", "passing_epa": "sum"
+    }).reset_index()
+
+    league_def = team_def_stats.mean(numeric_only=True)
+    opp_def_df = team_def_stats[team_def_stats["opponent_team"] == opp_team]
+    opp_def = opp_def_df.mean(numeric_only=True) if not opp_def_df.empty else league_def
+
+    league_rush_epa_att = team_def_stats["rushing_epa"].sum() / max(1, team_def_stats["carries"].sum())
+    league_pass_epa_att = team_def_stats["passing_epa"].sum() / max(1, team_def_stats["attempts"].sum())
+
+    opp_rush_epa_allowed = opp_def_df["rushing_epa"].sum() / max(1, opp_def_df["carries"].sum()) if not opp_def_df.empty else league_rush_epa_att
+    opp_pass_epa_allowed = opp_def_df["passing_epa"].sum() / max(1, opp_def_df["attempts"].sum()) if not opp_def_df.empty else league_pass_epa_att
+
+    # Calculate defensive EPA weakness (Positive delta = defense gives up high EPA)
+    rush_epa_delta = opp_rush_epa_allowed - league_rush_epa_att
+    pass_epa_delta = opp_pass_epa_allowed - league_pass_epa_att
 
     league_avg_rush_att = team_weekly_off["carries"].mean() if not team_weekly_off.empty else 27.0
     league_avg_pass_att = team_weekly_off["attempts"].mean() if not team_weekly_off.empty else 34.0
@@ -201,20 +245,10 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     team_std_rush_att = float(off_rush_series.std()) if len(off_rush_series) > 1 and not pd.isna(off_rush_series.std()) else 4.8
     team_std_pass_att = float(off_pass_series.std()) if len(off_pass_series) > 1 and not pd.isna(off_pass_series.std()) else 5.2
 
-    team_def_stats = weekly_df.groupby(["opponent_team", "season", "week"]).agg({
-        "rushing_yards": "sum", "receiving_yards": "sum", "attempts": "sum",
-        "completions": "sum", "passing_tds": "sum", "interceptions": "sum",
-        "carries": "sum", "rushing_tds": "sum", "sacks": "sum"
-    }).reset_index()
-
     team_def_stats["comp_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["completions"] / team_def_stats["attempts"], 0.65)
     team_def_stats["pass_td_rate_allowed"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["passing_tds"] / team_def_stats["attempts"], 0.04)
     team_def_stats["int_rate_forced"] = np.where(team_def_stats["attempts"] > 0, team_def_stats["interceptions"] / team_def_stats["attempts"], 0.02)
     team_def_stats["rush_td_rate_allowed"] = np.where(team_def_stats["carries"] > 0, team_def_stats["rushing_tds"] / team_def_stats["carries"], 0.03)
-
-    league_def = team_def_stats.mean(numeric_only=True)
-    opp_def_df = team_def_stats[team_def_stats["opponent_team"] == opp_team]
-    opp_def = opp_def_df.mean(numeric_only=True) if not opp_def_df.empty else league_def
 
     def_rush_att = opp_def["carries"]
     def_pass_att = opp_def["attempts"]
@@ -227,7 +261,6 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     pass_trench_factor = min(2.0, max(0.5, (opp_sacks_forced / max(1, league_avg_sacks)) * (team_sacks_allowed / max(1, league_avg_sacks))))
     run_trench_factor = min(1.5, max(0.6, (opp_ypc_allowed / max(1, league_ypc)) * (off_ypc / max(1, league_ypc))))
 
-    # DvP Calculations
     pos_df = weekly_df[weekly_df["position"] == player_pos]
     pos_def_weekly = pos_df.groupby(["opponent_team", "season", "week"]).agg({
         "targets": "sum", "receptions": "sum", "receiving_yards": "sum", "receiving_tds": "sum",
@@ -281,19 +314,32 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     merged["int_rate"] = np.where(merged["attempts"] > 0, merged["interceptions"] / merged["attempts"], 0.0)
 
     # -------------------------------------------------------------
-    # aDOT CALCULATION & DEPTH VARIANCE SCALING
+    # OFFENSIVE PLAYER EPA CALCULATION
+    # -------------------------------------------------------------
+    merged["rush_epa_per_att"] = np.where(merged["carries"] > 0, merged["rushing_epa"] / merged["carries"], 0.0)
+    merged["rec_epa_per_tgt"] = np.where(merged["targets"] > 0, merged["receiving_epa"] / merged["targets"], 0.0)
+    merged["pass_epa_per_att"] = np.where(merged["attempts"] > 0, merged["passing_epa"] / merged["attempts"], 0.0)
+    
+    player_rush_epa = get_ema(merged[merged["carries"] > 0]["rush_epa_per_att"], span=4, default=0.0)
+    player_rec_epa = get_ema(merged[merged["targets"] > 0]["rec_epa_per_tgt"], span=4, default=0.0)
+    player_pass_epa = get_ema(merged[merged["attempts"] > 0]["pass_epa_per_att"], span=4, default=0.0)
+
+    # The EPA Efficiency Multiplier integrates True Talent + Matchup Weakness
+    epa_rush_mult = max(0.7, min(1.3, 1.0 + (rush_epa_delta * 0.4) + (player_rush_epa * 0.15)))
+    epa_pass_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_pass_epa * 0.15)))
+    epa_rec_mult = max(0.7, min(1.3, 1.0 + (pass_epa_delta * 0.4) + (player_rec_epa * 0.15)))
+
+    # -------------------------------------------------------------
+    # aDOT CALCULATION
     # -------------------------------------------------------------
     air_yards_col = "receiving_air_yards" if "receiving_air_yards" in merged.columns else ("air_yards" if "air_yards" in merged.columns else None)
     if air_yards_col:
         merged["adot"] = np.where(merged["targets"] > 0, merged[air_yards_col] / merged["targets"], np.nan)
         player_adot = get_ema(merged[merged["targets"] > 0]["adot"], span=4, default=(10.5 if player_pos == "WR" else (7.0 if player_pos == "TE" else 3.5)))
     else:
-        # Fallback estimation using yards-per-target
         raw_ypt_est = merged["receiving_yards"].sum() / max(1.0, merged["targets"].sum())
         player_adot = max(2.5, min(16.0, raw_ypt_est * 1.15))
 
-    # Variance Multiplier: stretches Log-Normal spread for deep threats, compresses for possession receivers
-    # League benchmark aDOT ~ 8.5 yards
     adot_variance_mult = min(1.65, max(0.65, 1.0 + ((player_adot - 8.5) * 0.055)))
 
     opp_rush_share = get_ema(merged["rush_share"], span=4, default=(0.5 if player_pos == "RB" else 0.0))
@@ -319,15 +365,15 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
     ypt_std = (merged["receiving_yards"].std() / max(1.0, merged["receptions"].mean())) if len(merged) > 1 else 3.5
     ypa_std = (merged["passing_yards"].std() / max(1.0, merged["attempts"].mean())) if len(merged) > 1 else 2.5
 
-    # Scale receiving standard deviation by aDOT profile
     scaled_rec_eff_std = float(np.nan_to_num(ypt_std, nan=3.5)) * adot_variance_mult
 
+    # Multipliers applied natively to Log-Normal mean expectations
     adj_catch_rate = raw_catch_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
     adj_comp_rate = raw_comp_rate * def_comp_factor * (1 - ((pass_trench_factor - 1) * 0.05)) * precip_catch_penalty * wind_pass_penalty
     
-    adj_pass_eff_mean = ypa_base * def_pass_yd_factor * efficiency_multiplier * (1 - ((pass_trench_factor - 1) * 0.05)) * wind_pass_penalty
-    adj_rec_eff_mean = ypt_base * dvp_rec_yd_factor * efficiency_multiplier * wind_pass_penalty
-    adj_rush_eff_mean = ypc_base * run_trench_factor * (dvp_rush_yd_factor if player_pos == "RB" else 1.0) * efficiency_multiplier
+    adj_pass_eff_mean = ypa_base * def_pass_yd_factor * efficiency_multiplier * epa_pass_mult * (1 - ((pass_trench_factor - 1) * 0.05)) * wind_pass_penalty
+    adj_rec_eff_mean = ypt_base * dvp_rec_yd_factor * efficiency_multiplier * epa_rec_mult * wind_pass_penalty
+    adj_rush_eff_mean = ypc_base * run_trench_factor * epa_rush_mult * (dvp_rush_yd_factor if player_pos == "RB" else 1.0) * efficiency_multiplier
 
     adj_int_rate = ((int_rate_base * def_int_factor) / efficiency_multiplier) * (1 + ((pass_trench_factor - 1) * 0.15))
     if wind_mph > 15.0:
@@ -345,6 +391,7 @@ def calculate_matchup_baselines(player_name, opp_team, spread_val, total_val, we
         "catch_rate": min(1.0, max(0.2, adj_catch_rate)),
         "comp_rate": min(1.0, max(0.2, adj_comp_rate)),
         "player_adot": round(float(player_adot), 1),
+        "player_epa": round(float(player_pass_epa if player_pos == "QB" else (player_rush_epa if player_pos == "RB" else player_rec_epa)), 3),
         "rush_eff_mean": adj_rush_eff_mean,
         "rush_eff_std": float(np.nan_to_num(ypc_std, nan=2.8)),
         "rec_eff_mean": adj_rec_eff_mean,

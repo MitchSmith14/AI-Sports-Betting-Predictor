@@ -169,39 +169,43 @@ def render_nfl():
     off_stats = calculate_offense_summary(weekly_df, matchup["player_team"])
     df_sims = run_simulation(simulations, matchup)
 
-    # Trench profiles
+    # Trench profiles (Now 6 Columns for EPA/Play)
     with st.expander("📊 View Matchup Trench Profiles", expanded=False):
         if off_stats.get("has_data", False):
             st.markdown(f"<div style='display: flex; align-items: center; margin-bottom: 10px;'><img src='{player_team_logo}' width='40' style='margin-right: 12px;'><h4 style='margin: 0; padding: 0;'>{matchup['player_team']} Offensive Profile ({off_stats['season']} Season)</h4></div>", unsafe_allow_html=True)
-            ocol1, ocol2, ocol3, ocol4, ocol5 = st.columns(5)
+            ocol1, ocol2, ocol3, ocol4, ocol5, ocol6 = st.columns(6)
             if player_pos_detected == "RB":
                 ocol1.metric("Rush Yds/G", f"{off_stats['rush_yds_pg']:.1f}", delta=f"Rank #{off_stats['rush_yds_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol2.metric("Rush Att/G", f"{off_stats['rush_att_pg']:.1f}", delta=f"Rank #{off_stats['rush_att_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol3.metric("YPC", f"{off_stats['ypc']:.2f}", delta=f"Rank #{off_stats['ypc_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol4.metric("Pass Yds/G", f"{off_stats['pass_yds_pg']:.1f}", delta=f"Rank #{off_stats['pass_yds_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol5.metric("Sacks Allowed/G", f"{off_stats['sacks_pg']:.1f}", delta=f"Rank #{off_stats['sacks_rank']}/{off_stats['total_teams']}", delta_color="off")
+                ocol6.metric("Rush EPA/Play", f"{off_stats['rush_epa_per_att']:.3f}", delta=f"Rank #{off_stats['rush_epa_rank']}/{off_stats['total_teams']}", delta_color="off")
             else:
                 ocol1.metric("Pass Yds/G", f"{off_stats['pass_yds_pg']:.1f}", delta=f"Rank #{off_stats['pass_yds_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol2.metric("Pass Att/G", f"{off_stats['pass_att_pg']:.1f}", delta=f"Rank #{off_stats['pass_att_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol3.metric("Comp %", f"{off_stats['comp_pct']:.1f}%", delta=f"Rank #{off_stats['comp_pct_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol4.metric("Yards / Att", f"{off_stats['ypa']:.1f}", delta=f"Rank #{off_stats['ypa_rank']}/{off_stats['total_teams']}", delta_color="off")
                 ocol5.metric("Sacks Allowed/G", f"{off_stats['sacks_pg']:.1f}", delta=f"Rank #{off_stats['sacks_rank']}/{off_stats['total_teams']}", delta_color="off")
+                ocol6.metric("Pass EPA/Play", f"{off_stats['pass_epa_per_att']:.3f}", delta=f"Rank #{off_stats['pass_epa_rank']}/{off_stats['total_teams']}", delta_color="off")
         st.markdown("---")
         if def_stats.get("has_data", False):
             st.markdown(f"<div style='display: flex; align-items: center; margin-bottom: 10px;'><img src='{def_team_logo}' width='40' style='margin-right: 12px;'><h4 style='margin: 0; padding: 0;'>{selected_opponent} Defensive Profile ({def_stats['season']} Season)</h4></div>", unsafe_allow_html=True)
-            dcol1, dcol2, dcol3, dcol4, dcol5 = st.columns(5)
+            dcol1, dcol2, dcol3, dcol4, dcol5, dcol6 = st.columns(6)
             if player_pos_detected == "RB":
                 dcol1.metric("Rush Yds Allowed/G", f"{def_stats['rush_yds_pg']:.1f}", delta=f"Rank #{def_stats['rush_yds_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol2.metric("Rush Att Allowed/G", f"{def_stats['rush_att_pg']:.1f}", delta=f"Rank #{def_stats['rush_att_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol3.metric("YPC Allowed", f"{def_stats['ypc']:.2f}", delta=f"Rank #{def_stats['ypc_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol4.metric("Pass Yds Allowed/G", f"{def_stats['pass_yds_pg']:.1f}", delta=f"Rank #{def_stats['pass_yds_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol5.metric("Sacks Forced/G", f"{def_stats['sacks_pg']:.1f}", delta=f"Rank #{def_stats['sacks_rank']}/{def_stats['total_teams']}", delta_color="off")
+                dcol6.metric("Rush EPA Allowed", f"{def_stats['rush_epa_per_att']:.3f}", delta=f"Rank #{def_stats['rush_epa_rank']}/{def_stats['total_teams']}", delta_color="off")
             else:
                 dcol1.metric("Pass Yds Allowed/G", f"{def_stats['pass_yds_pg']:.1f}", delta=f"Rank #{def_stats['pass_yds_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol2.metric("Pass Att Allowed/G", f"{def_stats['pass_att_pg']:.1f}", delta=f"Rank #{def_stats['pass_att_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol3.metric("Comp % Allowed", f"{def_stats['comp_pct']:.1f}%", delta=f"Rank #{def_stats['comp_pct_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol4.metric("Yards / Att Allowed", f"{def_stats['ypa']:.1f}", delta=f"Rank #{def_stats['ypa_rank']}/{def_stats['total_teams']}", delta_color="off")
                 dcol5.metric("Sacks Forced/G", f"{def_stats['sacks_pg']:.1f}", delta=f"Rank #{def_stats['sacks_rank']}/{def_stats['total_teams']}", delta_color="off")
+                dcol6.metric("Pass EPA Allowed", f"{def_stats['pass_epa_per_att']:.3f}", delta=f"Rank #{def_stats['pass_epa_rank']}/{def_stats['total_teams']}", delta_color="off")
             if "dvp_pos" in def_stats:
                 st.markdown(f"**Vs. {def_stats['dvp_pos']}s specifically (Defense vs. Position):**")
                 dvp_c1, dvp_c2 = st.columns([1, 1])
@@ -222,7 +226,7 @@ def render_nfl():
                 "pass_tds", "Passing TDs",
                 c3.number_input("Passing TDs Line", value=st.session_state['pass_tds_input'], step=0.5, key="pt"),
                 c4.number_input("Passing TD Odds", value=st.session_state['pass_td_odds_input'], step=5, key="pto"),
-                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Pass Att": df_sims["pass_attempts"].mean()}
+                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Pass Att": df_sims["pass_attempts"].mean(), "Player EPA/Att": matchup["player_epa"]}
             )
         with tab2:
             st.markdown("##### Configuration")
@@ -234,7 +238,7 @@ def render_nfl():
                 "interceptions", "Interceptions",
                 c3.number_input("Interceptions Line", value=st.session_state['pass_int_input'], step=0.5, key="pi"),
                 c4.number_input("Interceptions Odds", value=st.session_state['pass_int_odds_input'], step=5, key="pio"),
-                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Pass Att": df_sims["pass_attempts"].mean()}
+                context_metrics={"Team Pass Att": df_sims["team_pass"].mean(), "Player Pass Att": df_sims["pass_attempts"].mean(), "Player EPA/Att": matchup["player_epa"]}
             )
         with tab3:
             st.markdown("##### Configuration")
@@ -246,7 +250,7 @@ def render_nfl():
                 "rush_tds", "Rushing TDs",
                 c3.number_input("Rushing TDs Line", value=st.session_state['rush_tds_input'], step=0.5, key="rtq"),
                 c4.number_input("Rushing TD Odds", value=st.session_state['rush_td_odds_input'], step=5, key="rtoq"),
-                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean()}
+                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"]}
             )
     elif player_pos_detected == "RB":
         tab1, tab2 = st.tabs(["👟 Rushing", "🤲 Receiving"])
@@ -260,7 +264,7 @@ def render_nfl():
                 "rush_tds", "Rushing TDs",
                 c3.number_input("Rushing TDs Line", value=st.session_state['rush_tds_input'], step=0.5, key="rtr"),
                 c4.number_input("Rushing TD Odds", value=st.session_state['rush_td_odds_input'], step=5, key="rtor"),
-                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean()}
+                context_metrics={"Team Rush Att": df_sims["team_rush"].mean(), "Player Carries": df_sims["carries"].mean(), "Player EPA/Rush": matchup["player_epa"]}
             )
         with tab2:
             st.markdown("##### Configuration")
@@ -276,7 +280,8 @@ def render_nfl():
                     "Team Pass Att": df_sims["team_pass"].mean(),
                     "Player Targets": df_sims["targets"].mean(),
                     "Receptions": df_sims["receptions"].mean(),
-                    "Avg Target Depth (aDOT)": matchup["player_adot"]
+                    "Avg Target Depth (aDOT)": matchup["player_adot"],
+                    "Player EPA/Target": matchup["player_epa"]
                 }
             )
     else:
@@ -295,7 +300,8 @@ def render_nfl():
                     "Team Pass Att": df_sims["team_pass"].mean(),
                     "Player Targets": df_sims["targets"].mean(),
                     "Receptions": df_sims["receptions"].mean(),
-                    "Avg Target Depth (aDOT)": matchup["player_adot"]
+                    "Avg Target Depth (aDOT)": matchup["player_adot"],
+                    "Player EPA/Target": matchup["player_epa"]
                 }
             )
 

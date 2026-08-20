@@ -39,11 +39,13 @@ def load_nfl_data():
 
     if "position" in df.columns: df["position"] = df["position"].astype(str).str.upper()
 
+    # ADDED EPA COLUMNS HERE
     numeric_cols = [
         "attempts", "completions", "passing_yards", "passing_tds", "interceptions",
         "sacks", "carries", "rushing_yards", "rushing_tds", "targets",
         "receptions", "receiving_yards", "receiving_tds",
-        "air_yards", "receiving_air_yards", "passing_air_yards"
+        "air_yards", "receiving_air_yards", "passing_air_yards",
+        "passing_epa", "rushing_epa", "receiving_epa"
     ]
     for col in numeric_cols:
         if col in df.columns:
