@@ -3,8 +3,8 @@
 import streamlit as st
 import pandas as pd
 from sports.nfl.data_ingestion import (
-    load_nfl_data, load_schedule_data, load_teams_data,
-    get_upcoming_matchup, get_team_colors, get_team_logo_url, get_player_headshot_url
+    load_nfl_data, load_schedule_data, load_teams_data, load_injury_data,
+    get_upcoming_matchup, get_team_injury_report, get_team_colors, get_team_logo_url, get_player_headshot_url
 )
 from sports.nfl.config import NFL_STADIUM_COORDS, TEAM_ABBR_TO_NAME
 from sports.nfl.engine import (
@@ -50,12 +50,16 @@ def render_nfl():
     weekly_df = load_nfl_data()
     schedules_df = load_schedule_data()
     teams_metadata = load_teams_data()
+    injuries_df = load_injury_data()
 
     if weekly_df.empty:
         st.warning("No NFL data available. Please verify nflreadpy is installed and configured.")
         return
 
-    # Sidebar Navigation
+    # Failsafe Initialization
+    if 'inactive_selections' not in st.session_state:
+        st.session_state['inactive_selections'] = []
+
     st.sidebar.header("🎯 Matchup Selection")
     selected_pos = st.sidebar.radio("Position Filter", ["ALL", "QB", "RB", "WR", "TE"], horizontal=True)
 
@@ -76,12 +80,21 @@ def render_nfl():
     default_opp = matchup_info['opponent'] if matchup_info else "GB"
     default_spread = matchup_info['spread'] if matchup_info else (-3.5 if player_pos_detected in ["RB", "QB"] else 3.5)
     default_total = matchup_info['total'] if matchup_info else 47.5
+    current_matchup_week = matchup_info.get("week") if matchup_info else None
 
     team_list = sorted(weekly_df["recent_team"].dropna().unique())
     selected_opponent = st.sidebar.selectbox("Opposing Defense:", team_list, index=team_list.index(default_opp) if default_opp in team_list else 0)
     def_team_logo = get_team_logo_url(selected_opponent, teams_metadata)
 
-    # State init
+    # -------------------------------------------------------------
+    # AUTOMATED INJURY DETECTION FOR BOTH TEAMS
+    # -------------------------------------------------------------
+    off_injuries = get_team_injury_report(player_team_abbr, injuries_df, weekly_df, current_matchup_week)
+    def_injuries = get_team_injury_report(selected_opponent, injuries_df, weekly_df, current_matchup_week)
+
+    # Only players confirmed OUT / IR are defaulted into the Vacated Volume engine
+    auto_confirmed_inactives = [p["player_name"] for p in off_injuries if p["is_out"] and p["player_name"] != selected_player]
+
     if 'current_player' not in st.session_state or st.session_state['current_player'] != selected_player:
         st.session_state['current_player'] = selected_player
         st.session_state['spread_input'] = float(default_spread)
@@ -94,6 +107,7 @@ def render_nfl():
         st.session_state['rush_tds_input'] = 0.5; st.session_state['rush_td_odds_input'] = 120 if player_pos_detected == "RB" else 350
         st.session_state['rec_yds_input'] = float(22.5 if player_pos_detected == "RB" else 68.5); st.session_state['rec_odds_input'] = -110
         st.session_state['rec_tds_input'] = 0.5; st.session_state['rec_td_odds_input'] = 250 if player_pos_detected == "RB" else 130
+        st.session_state['inactive_selections'] = auto_confirmed_inactives
 
     with st.sidebar.expander("⚙️ Game Environment Setup", expanded=False):
         st.session_state['spread_input'] = st.number_input("Spread (-Fav / +Dog)", value=st.session_state['spread_input'], step=0.5)
@@ -101,11 +115,20 @@ def render_nfl():
         coverage_scheme = st.selectbox("Opponent Coverage Scheme", ["Neutral", "Heavy Man", "Heavy Zone", "2-High Shell"])
         simulations = st.slider("Monte Carlo Sims", 1000, 50000, 10000, step=1000)
 
-    with st.sidebar.expander("🚑 Injury & Roster Adjustments", expanded=False):
-        st.caption("Select inactive teammates to dynamically redistribute their vacated volume to your selected player.")
+    with st.sidebar.expander("🚑 Active Inactives & Vacated Volume", expanded=True):
+        st.caption("Players listed below are treated as OUT. Their historical volume is redistributed to active teammates:")
         roster = sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
         if selected_player in roster: roster.remove(selected_player)
-        inactive_selections = st.multiselect("Inactive Teammates:", roster, default=[])
+        
+        active_inactives = [p for p in st.session_state.get('inactive_selections', auto_confirmed_inactives) if p in roster]
+        
+        selected_inactives = st.multiselect(
+            "Out / Inactive Teammates:", 
+            roster, 
+            default=active_inactives,
+            key="inactive_selections_widget"
+        )
+        st.session_state['inactive_selections'] = selected_inactives
 
     with st.sidebar.expander("🌤️ Weather Override", expanded=False):
         override_weather = st.checkbox("Manually override weather forecast")
@@ -170,11 +193,47 @@ def render_nfl():
     c4.metric("Weather", "🏟️ Dome (Indoors)" if current_weather['condition'] == "Dome" else f"💨 {current_weather['wind_mph']} mph | 🌧️ {current_weather['precip_mm']} mm", help=current_weather['condition'])
     st.divider()
 
-    # Simulation calculations (Now passing coverage_scheme)
-    matchup = calculate_matchup_baselines(selected_player, selected_opponent, st.session_state['spread_input'], st.session_state['total_input'], current_weather, weekly_df, inactive_selections, coverage_scheme)
+    # Simulation calculations
+    matchup = calculate_matchup_baselines(selected_player, selected_opponent, st.session_state['spread_input'], st.session_state['total_input'], current_weather, weekly_df, selected_inactives, coverage_scheme)
     def_stats = calculate_defense_summary(weekly_df, selected_opponent, player_pos_detected)
     off_stats = calculate_offense_summary(weekly_df, matchup["player_team"])
     df_sims = run_simulation(simulations, matchup)
+
+    # -------------------------------------------------------------
+    # MATCHUP INJURY & STATUS REPORT BANNER
+    # -------------------------------------------------------------
+    with st.expander("🚑 Matchup Injury & Status Report", expanded=(len(off_injuries) > 0 or len(def_injuries) > 0)):
+        inj_col1, inj_col2 = st.columns(2)
+        
+        def format_impact(p):
+            if p["position"] == "QB":
+                return f"~{p['attempts']} Pass Atts"
+            elif p["position"] == "RB":
+                return f"~{p['carries']} Carries / ~{p['targets']} Tgts"
+            elif p["position"] in ["WR", "TE"]:
+                return f"~{p['targets']} Targets"
+            else:
+                return "Trench / Coverage Impact"
+
+        with inj_col1:
+            st.markdown(f"**{player_team_abbr} Full Injury Report:**")
+            if off_injuries:
+                for p in off_injuries:
+                    icon = "❌" if p["is_out"] else "⚠️"
+                    status_note = "**OUT / IR**" if p["is_out"] else "**QUESTIONABLE**"
+                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {status_note} | Impact: {format_impact(p)}")
+            else:
+                st.caption("✅ No players on the injury report.")
+
+        with inj_col2:
+            st.markdown(f"**{selected_opponent} Full Injury Report:**")
+            if def_injuries:
+                for p in def_injuries:
+                    icon = "❌" if p["is_out"] else "⚠️"
+                    status_note = "**OUT / IR**" if p["is_out"] else "**QUESTIONABLE**"
+                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {status_note} | Impact: {format_impact(p)}")
+            else:
+                st.caption("✅ No players on the injury report.")
 
     # Trench profiles
     with st.expander("📊 View Matchup Trench Profiles", expanded=False):

@@ -39,7 +39,6 @@ def load_nfl_data():
 
     if "position" in df.columns: df["position"] = df["position"].astype(str).str.upper()
 
-    # ADDED 'routes' TO NUMERIC COLS FOR TPRR
     numeric_cols = [
         "attempts", "completions", "passing_yards", "passing_tds", "interceptions",
         "sacks", "carries", "rushing_yards", "rushing_tds", "targets",
@@ -60,6 +59,79 @@ def load_schedule_data():
         return nfl.load_schedules([2024, 2025, 2026]).to_pandas()
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=1800, show_spinner="Loading injury reports...")
+def load_injury_data():
+    """Loads official NFL injury report and IR designations."""
+    if not HAS_NFLREADPY:
+        return pd.DataFrame()
+    try:
+        injuries = nfl.load_injuries([2025, 2026]).to_pandas()
+        if "full_name" in injuries.columns and "player_name" not in injuries.columns:
+            injuries["player_name"] = injuries["full_name"]
+        return injuries
+    except Exception:
+        return pd.DataFrame()
+
+def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: pd.DataFrame, current_week=None):
+    """
+    Identifies all players on a team who are on the injury report.
+    Returns every position without filtering out low-volume players.
+    """
+    if injury_df is None or injury_df.empty:
+        return []
+
+    clean_team = str(team_abbr).upper().strip()
+    team_injuries = injury_df[injury_df["team"] == clean_team].copy()
+    
+    if team_injuries.empty:
+        return []
+
+    if current_week and "week" in team_injuries.columns:
+        week_injuries = team_injuries[team_injuries["week"] == current_week]
+        if not week_injuries.empty:
+            team_injuries = week_injuries
+
+    report_col = "report_status" if "report_status" in team_injuries.columns else ("status" if "status" in team_injuries.columns else None)
+    
+    players_list = []
+    seen = set()
+
+    for _, row in team_injuries.iterrows():
+        p_name = row.get("player_name", None)
+        if not p_name or pd.isna(p_name) or p_name in seen:
+            continue
+        
+        status_str = str(row.get(report_col, "")).upper().strip() if report_col else ""
+        practice_str = str(row.get("practice_status", "")).upper().strip() if "practice_status" in row else ""
+
+        is_out = status_str in ["OUT", "DOUBTFUL", "IR", "INJURED RESERVE", "PUP", "SUSPENDED"] or "DID NOT PARTICIPATE" in practice_str or "DNP" in practice_str
+        is_questionable = status_str in ["QUESTIONABLE", "PROBABLE"] or ("LIMITED" in practice_str and not is_out)
+
+        if is_out or is_questionable:
+            seen.add(p_name)
+            pos = str(row.get("position", "UNK")).upper()
+            
+            # Fetch historical volume for the UI impact display
+            if not weekly_df.empty:
+                p_stats = weekly_df[(weekly_df["recent_team"] == clean_team) & (weekly_df["player_name"] == p_name)]
+                tot_att = p_stats["attempts"].sum() if not p_stats.empty else 0
+                tot_carries = p_stats["carries"].sum() if not p_stats.empty else 0
+                tot_targets = p_stats["targets"].sum() if not p_stats.empty else 0
+            else:
+                tot_att = tot_carries = tot_targets = 0
+                
+            players_list.append({
+                "player_name": p_name,
+                "position": pos,
+                "status": "Out / IR" if is_out else "Questionable",
+                "is_out": is_out,
+                "attempts": tot_att,
+                "carries": tot_carries,
+                "targets": tot_targets
+            })
+
+    return players_list
 
 @st.cache_data
 def load_teams_data():
@@ -101,8 +173,8 @@ def get_upcoming_matchup(team_abbr, schedules_data):
         'total': float(round(total_line * 2) / 2),
         'gameday': next_game['gameday'],
         'roof': "Dome" if roof.lower() in ['dome', 'closed'] else "Outdoor",
-        'week': next_game.get('week', 'Unknown'),
-        'season': next_game.get('season', 'Unknown')
+        'week': next_game.get('week', 1),
+        'season': next_game.get('season', 2026)
     }
 
 def get_team_colors(team_abbr: str, teams_metadata) -> dict:
