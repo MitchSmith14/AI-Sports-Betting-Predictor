@@ -90,10 +90,10 @@ def render_nfl():
     # -------------------------------------------------------------
     # AUTOMATED INJURY DETECTION FOR BOTH TEAMS
     # -------------------------------------------------------------
-    off_injuries = get_team_injury_report(player_team_abbr, injuries_df, weekly_df, current_matchup_week)
+    raw_off_injuries = get_team_injury_report(player_team_abbr, injuries_df, weekly_df, current_matchup_week)
     def_injuries = get_team_injury_report(selected_opponent, injuries_df, weekly_df, current_matchup_week)
 
-    auto_confirmed_inactives = [p["player_name"] for p in off_injuries if p["is_out"] and p["player_name"] != selected_player]
+    auto_confirmed_inactives = [p["player_name"] for p in raw_off_injuries if p["is_out"] and p["player_name"] != selected_player]
 
     if 'current_player' not in st.session_state or st.session_state['current_player'] != selected_player:
         st.session_state['current_player'] = selected_player
@@ -118,9 +118,9 @@ def render_nfl():
     with st.sidebar.expander("🚑 Active Inactives & Vacated Volume", expanded=True):
         st.caption("Players listed below are treated as OUT. Their volume & QB impact are calculated dynamically:")
         
-        # Use Official Roster API if available, else fallback to historic box scores
         if not rosters_df.empty:
-            roster = sorted(rosters_df[rosters_df["team"] == player_team_abbr]["player_name"].dropna().unique())
+            roster_col = "team" if "team" in rosters_df.columns else ("club" if "club" in rosters_df.columns else None)
+            roster = sorted(rosters_df[rosters_df[roster_col] == player_team_abbr]["player_name"].dropna().unique()) if roster_col else sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
         else:
             roster = sorted(weekly_df[weekly_df["recent_team"] == player_team_abbr]["player_name"].dropna().unique())
             
@@ -207,28 +207,43 @@ def render_nfl():
     st.divider()
 
     # -------------------------------------------------------------
-    # MATCHUP INJURY REPORT BANNER
+    # MERGE MANUAL INACTIVES INTO OFFENSIVE INJURY REPORT
     # -------------------------------------------------------------
-    with st.expander("🚑 Matchup Injury & Status Report", expanded=(len(off_injuries) > 0 or len(def_injuries) > 0)):
+    displayed_off_injuries = []
+    seen_off_players = set()
+
+    for p in raw_off_injuries:
+        p_copy = p.copy()
+        if p_copy["player_name"] in selected_inactives:
+            p_copy["is_out"] = True
+            p_copy["status"] = "OUT / Inactive (Vacated in Sim)"
+        displayed_off_injuries.append(p_copy)
+        seen_off_players.add(p_copy["player_name"])
+
+    for name in selected_inactives:
+        if name not in seen_off_players:
+            p_stats = weekly_df[(weekly_df["recent_team"] == player_team_abbr) & (weekly_df["player_name"] == name)]
+            pos = p_stats["position"].iloc[-1] if not p_stats.empty and "position" in p_stats.columns else "SKILL"
+
+            displayed_off_injuries.append({
+                "player_name": name,
+                "position": pos,
+                "status": "OUT / Inactive (Manual Override)",
+                "is_out": True
+            })
+
+    # -------------------------------------------------------------
+    # MATCHUP INJURY & STATUS REPORT BANNER
+    # -------------------------------------------------------------
+    with st.expander("🚑 Matchup Injury & Status Report", expanded=(len(displayed_off_injuries) > 0 or len(def_injuries) > 0)):
         inj_col1, inj_col2 = st.columns(2)
         
-        def format_impact(p):
-            if p["position"] == "QB":
-                return f"~{p['attempts']} Pass Atts"
-            elif p["position"] == "RB":
-                return f"~{p['carries']} Carries / ~{p['targets']} Tgts"
-            elif p["position"] in ["WR", "TE"]:
-                return f"~{p['targets']} Targets"
-            else:
-                return "Trench / Line Impact"
-
         with inj_col1:
             st.markdown(f"**{player_team_abbr} Full Injury Report:**")
-            if off_injuries:
-                for p in off_injuries:
+            if displayed_off_injuries:
+                for p in displayed_off_injuries:
                     icon = "❌" if p["is_out"] else "⚠️"
-                    status_note = "**OUT / IR**" if p["is_out"] else "**QUESTIONABLE**"
-                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {status_note} | Impact: {format_impact(p)}")
+                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {p['status']}")
             else:
                 st.caption("✅ No players on the injury report.")
 
@@ -238,7 +253,7 @@ def render_nfl():
                 for p in def_injuries:
                     icon = "❌" if p["is_out"] else "⚠️"
                     status_note = "**OUT / IR**" if p["is_out"] else "**QUESTIONABLE**"
-                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {status_note} | Impact: {format_impact(p)}")
+                    st.markdown(f"* {icon} **{p['player_name']}** ({p['position']}) — {status_note}")
             else:
                 st.caption("✅ No players on the injury report.")
 

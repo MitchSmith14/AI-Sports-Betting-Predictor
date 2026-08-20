@@ -121,7 +121,6 @@ def get_team_qb_depth(team_abbr: str, weekly_df: pd.DataFrame):
     # 1. Primary: Official Depth Chart Table
     dc_df = load_depth_chart_data()
     if not dc_df.empty:
-        # Safely identify the column containing the team abbreviation
         if "club_code" in dc_df.columns:
             team_dc = dc_df[dc_df["club_code"] == clean_team]
         elif "team" in dc_df.columns:
@@ -142,7 +141,6 @@ def get_team_qb_depth(team_abbr: str, weekly_df: pd.DataFrame):
     # 2. Secondary: Active Roster Data
     rosters_df = load_roster_data()
     if not rosters_df.empty:
-        # Safely identify the column for rosters
         team_col = "team" if "team" in rosters_df.columns else ("club" if "club" in rosters_df.columns else None)
         if team_col:
             active_team_roster = rosters_df[rosters_df[team_col] == clean_team]
@@ -172,6 +170,9 @@ def get_team_qb_depth(team_abbr: str, weekly_df: pd.DataFrame):
     return recent_qbs.groupby("player_name")["attempts"].sum().sort_values(ascending=False).index.tolist()
 
 def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: pd.DataFrame, current_week=None):
+    """
+    Returns only impactful players on the injury report (QBs, rotation skill players, or top depth chart starters).
+    """
     if injury_df is None or injury_df.empty:
         return []
 
@@ -193,6 +194,19 @@ def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: p
     players_list = []
     seen = set()
 
+    qb_depth = get_team_qb_depth(clean_team, weekly_df)
+    
+    # Load depth chart to capture top starters even if they haven't accumulated stats yet
+    dc_df = load_depth_chart_data()
+    top_depth_players = set()
+    if not dc_df.empty:
+        dc_col = "club_code" if "club_code" in dc_df.columns else ("team" if "team" in dc_df.columns else ("club" if "club" in dc_df.columns else None))
+        if dc_col and dc_col in dc_df.columns:
+            t_dc = dc_df[dc_df[dc_col] == clean_team]
+            if not t_dc.empty and "depth_team" in t_dc.columns:
+                top_dc = t_dc[pd.to_numeric(t_dc["depth_team"], errors="coerce") <= 3]
+                top_depth_players = set(top_dc["player_name"].dropna().unique())
+
     for _, row in team_injuries.iterrows():
         p_name = row.get("player_name", None)
         if not p_name or pd.isna(p_name) or p_name in seen:
@@ -205,17 +219,29 @@ def get_team_injury_report(team_abbr: str, injury_df: pd.DataFrame, weekly_df: p
         is_questionable = status_str in ["QUESTIONABLE", "PROBABLE"] or ("LIMITED" in practice_str and not is_out)
 
         if is_out or is_questionable:
-            seen.add(p_name)
             pos = str(row.get("position", "UNK")).upper()
             
+            tot_att = tot_carries = tot_targets = 0
             if not weekly_df.empty:
                 p_stats = weekly_df[(weekly_df["recent_team"] == clean_team) & (weekly_df["player_name"] == p_name)]
                 tot_att = p_stats["attempts"].sum() if not p_stats.empty else 0
                 tot_carries = p_stats["carries"].sum() if not p_stats.empty else 0
                 tot_targets = p_stats["targets"].sum() if not p_stats.empty else 0
-            else:
-                tot_att = tot_carries = tot_targets = 0
-                
+
+            # Filter for simulation impact:
+            # 1. Any rotation QB
+            # 2. Skill positions with non-zero usage (>= 2 carries, >= 2 targets, or passing attempts)
+            # 3. Top-3 depth chart players for key positions
+            is_impactful = (
+                (pos == "QB" and (p_name in qb_depth[:3] or tot_att > 0)) or
+                (tot_carries >= 2 or tot_targets >= 2 or tot_att > 0) or
+                (p_name in top_depth_players and pos in ["QB", "RB", "WR", "TE"])
+            )
+
+            if not is_impactful:
+                continue
+
+            seen.add(p_name)
             players_list.append({
                 "player_name": p_name,
                 "position": pos,
